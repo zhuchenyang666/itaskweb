@@ -231,12 +231,13 @@ input:disabled {
   gap:10px;
   margin-top:60px
 }
-.sidebar nav button {
+.sidebar nav a {
+  cursor:default;
   text-align:left;
   padding:13px 15px;
   border-radius:5px
 }
-.sidebar nav button.active {
+.sidebar nav a.active {
   background:#dff1e3;
   color:#20572f;
   font-weight:600
@@ -348,7 +349,7 @@ input:disabled {
     font-size:23px;
     gap:8px
   }
-  .sidebar nav button {
+  .sidebar nav a {
     padding:12px 9px
   }
   .workspace-content {
@@ -373,7 +374,7 @@ input:disabled {
   }
 }
 
-:root{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;text-rendering:optimizeLegibility} .workspace{font-size:15px}.workspace input,.workspace select,.workspace textarea{font-size:14px}.workspace .subtitle{color:#5a6f61}.sidebar{padding:28px 14px}.sidebar nav{margin-top:45px}.sidebar .brand{font-size:25px}.sidebar nav button{font-size:15px}
+:root{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;text-rendering:optimizeLegibility} .workspace{font-size:15px}.workspace input,.workspace select,.workspace textarea{font-size:14px}.workspace .subtitle{color:#5a6f61}.sidebar{padding:28px 14px}.sidebar nav{margin-top:45px}.sidebar .brand{font-size:25px}.sidebar nav a{font-size:15px}
 
 /* 表格自然撑开页面，统一使用浏览器纵向滚动。 */
 .workspace-content{display:flex;flex-direction:column;padding:18px 28px 14px}

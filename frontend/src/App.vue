@@ -1,18 +1,22 @@
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ToastHost from './ToastHost.vue'
 import ThemeDialog from './ThemeDialog.vue'
 import { notify } from './toast'
 import BusinessView from './BusinessView.vue'
 import { request } from './api'
+import { navigationFor, resolvePage } from './routes'
 const username = ref(''), password = ref(''), user = ref(null)
 const loading = ref(true), busy = ref(false), error = ref(''), notice = ref(''), page = ref('')
 const exportLocked = ref(false)
 const authStage = ref('')
+const versionDialog = ref(false)
+const navigation = computed(() => navigationFor(user.value?.role))
 const currentPassword = ref(''), newPassword = ref(''), confirmPassword = ref('')
 watch(error, value => { if(value) notify(value,'error') })
 watch(notice, value => { if(value) notify(value) })
-let expiryTimer
+watch(user, value => { if(!value) { versionDialog.value = false; showLogin() } })
+let expiryTimer, requestedPath = ''
 async function api(path, body) {
   try { return await request('auth/' + path, body === undefined ? 'GET' : 'POST', body) }
   catch(e) {
@@ -27,8 +31,18 @@ function scheduleExpiry() {
   expiryTimer = setTimeout(restoreSession, midnight - now + 100)
 }
 async function restoreSession() {
-  try { user.value = await api('me'); if (!page.value) page.value = user.value.role === 'admin' ? '首页总览' : '工时记录'; if (user.value.role !== 'admin' && page.value === '首页总览') page.value = '工时记录'; scheduleExpiry() }
-  catch { user.value = null }
+  const previous = user.value
+  try {
+    const account = await request('auth/me')
+    if (busy.value || user.value !== previous) return
+    user.value = account
+    syncLocation()
+    scheduleExpiry()
+  } catch {
+    if (busy.value || user.value !== previous) return
+    user.value = null
+    showLogin()
+  }
   finally { loading.value = false }
 }
 async function submit() {
@@ -41,8 +55,9 @@ async function submit() {
     authStage.value = '正在进入工作台…'
     await new Promise(resolve => setTimeout(resolve, 400))
     password.value = ''
-    page.value = account.role === 'admin' ? '首页总览' : '工时记录'
     user.value = account
+    syncLocation(requestedPath || window.location.pathname)
+    requestedPath = ''
     scheduleExpiry()
   } catch (e) { error.value = e.name === 'TimeoutError' ? '请求超时，请稍后重试' : e instanceof TypeError ? '暂时无法连接服务，请稍后重试' : e.message }
   finally { authStage.value = ''; busy.value = false }
@@ -55,6 +70,7 @@ async function logout() {
     await api('logout', {})
     clearTimeout(expiryTimer)
     await new Promise(resolve => setTimeout(resolve, 400))
+    showLogin(false)
     user.value = null
     password.value = ''; currentPassword.value = newPassword.value = confirmPassword.value = ''
   } catch { error.value = '退出失败，请重试' }
@@ -66,18 +82,49 @@ async function changePassword() {
   busy.value = true
   try {
     await api('password', { current_password: currentPassword.value, new_password: newPassword.value })
+    showLogin(false)
     user.value = null; clearTimeout(expiryTimer); currentPassword.value = newPassword.value = confirmPassword.value = ''
     notice.value = '密码已修改，请使用新密码重新登录。'
   } catch (e) { error.value = e instanceof TypeError ? '暂时无法连接服务' : e.message }
   finally { busy.value = false }
 }
-function goPage(value) {
+function setPage(value) {
+  if (page.value === value) return
   page.value = value; error.value = notice.value = ''
   currentPassword.value = newPassword.value = confirmPassword.value = ''
 }
+function showLogin(remember = true) {
+  clearTimeout(expiryTimer)
+  const path = window.location.pathname
+  if (!remember) requestedPath = ''
+  else if (path !== '/') requestedPath = path
+  if (path !== '/') window.history.replaceState(null, '', '/')
+  setPage('')
+}
+function syncLocation(path = window.location.pathname) {
+  if (!user.value) { showLogin(); return }
+  const route = resolvePage(path, user.value.role)
+  if (window.location.pathname !== route.path) window.history.replaceState(null, '', route.path)
+  setPage(route.page)
+}
+function goPage(route) {
+  if (window.location.pathname !== route.path) window.history.pushState(null, '', route.path)
+  setPage(route.page)
+}
+function onPopState() {
+  if (!loading.value) syncLocation()
+}
 function onVisible() { if (document.visibilityState === 'visible' && !authStage.value) restoreSession() }
-onMounted(() => { restoreSession(); document.addEventListener('visibilitychange', onVisible) })
-onUnmounted(() => { clearTimeout(expiryTimer); document.removeEventListener('visibilitychange', onVisible) })
+onMounted(() => {
+  window.addEventListener('popstate', onPopState)
+  document.addEventListener('visibilitychange', onVisible)
+  restoreSession()
+})
+onUnmounted(() => {
+  clearTimeout(expiryTimer)
+  window.removeEventListener('popstate', onPopState)
+  document.removeEventListener('visibilitychange', onVisible)
+})
 </script>
 
 <template>
@@ -122,13 +169,22 @@ onUnmounted(() => { clearTimeout(expiryTimer); document.removeEventListener('vis
     <aside class="sidebar">
       <div class="brand"><img src="/itime.png" alt="" />iTime</div>
       <nav aria-label="主导航" :inert="exportLocked">
-        <button v-if="user.role === 'admin'" :class="{ active: page === '首页总览' }" @click="goPage('首页总览')">首页总览</button>
-        <button :class="{ active: page === '工时记录' }" @click="goPage('工时记录')">工时记录</button>
-        <button :class="{ active: page === (user.role === 'admin' ? '用户管理' : '个人信息') }" @click="goPage(user.role === 'admin' ? '用户管理' : '个人信息')">{{ user.role === 'admin' ? '用户管理' : '个人信息' }}</button>
-<button v-if="user.role === 'admin'" :class="{active: page === '通用设置'}" @click="goPage('通用设置')">通用设置</button>
-        <button :class="{ active: page === '账户管理' }" @click="goPage('账户管理')">账户管理</button>
+        <a v-for="route in navigation" :key="route.path" :href="route.path" :class="{active:page === route.page}"
+           :aria-current="page === route.page ? 'page' : undefined" @click.exact.prevent="goPage(route)">{{ route.page }}</a>
       </nav>
-
+      <button type="button" class="version-entry" :disabled="exportLocked" aria-label="查看 v.20261111 更新说明" @click="versionDialog = true">
+        <img src="/version.png" alt="" /><span>v.20261111</span>
+      </button>
+      <ThemeDialog :open="versionDialog" labelledby="version-title" @close="versionDialog = false">
+        <div class="version-heading"><h2 id="version-title">版本更新 · v.20261111</h2><button type="button" class="close-button" aria-label="关闭更新说明" @click="versionDialog = false">×</button></div>
+        <ol class="version-notes">
+          <li>首页总览的任务类型工时占比改为横向柱状图。柱状图支持升序、降序和不排序，默认降序。</li>
+          <li>工时记录在新增、编辑和删除后保留筛选。表头支持逐列筛选和跨年日期范围，关键词可在筛选结果上继续匹配。默认仅按日期升序，表格支持横向滚动。</li>
+          <li>年度导出先选择年份，默认当年，可独立选择是否包含停用人员。</li>
+          <li>工时记录和用户管理添加批量删除功能。用户批量删除为停用，保留账号及历史工时。</li>
+          <li>导航页使用独立地址，支持直接访问、刷新和浏览器前进后退。侧栏使用默认鼠标箭头。</li>
+        </ol>
+      </ThemeDialog>
     </aside>
     <section class="workspace-content">
       <header><button :disabled="busy || exportLocked" class="text-button" @click="logout">返回首页</button><span class="role-badge">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</span></header>
@@ -145,7 +201,7 @@ onUnmounted(() => { clearTimeout(expiryTimer); document.removeEventListener('vis
         <label for="confirm-password">确认新密码</label><input id="confirm-password" v-model="confirmPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" />
         <button class="primary submit" :disabled="busy">{{ busy ? '正在保存…' : '保存新密码' }}</button>
       </form>
-      <BusinessView v-if="page !== '账户管理'" :user="user" :page="page" @updated="user = $event" @expired="user = null" @export-state="exportLocked = $event" />
+      <BusinessView v-show="page !== '账户管理'" :user="user" :page="page" @updated="user = $event" @expired="user = null" @export-state="exportLocked = $event" />
     </section>
   </main>
 </template>
@@ -154,6 +210,13 @@ onUnmounted(() => { clearTimeout(expiryTimer); document.removeEventListener('vis
 .login-progress { display: grid; justify-items: center; gap: 16px; padding: 16px; }
 .login-progress p { margin: 0; }
 .login-spinner { width: 32px; height: 32px; border: 3px solid #dceee2; border-top-color: #287646; border-radius: 50%; animation: login-spin .75s linear infinite; }
+.version-entry { display:flex;align-items:center;gap:8px;margin-top:auto;padding:24px 8px 0;color:#7e9487;font-size:12px;white-space:nowrap;cursor:default; }
+.version-entry img { width:19px;height:19px;object-fit:contain; }
+.version-entry:hover:not(:disabled) { color:#287646; }
+.version-heading { display:flex;align-items:center;justify-content:space-between;gap:16px; }
+.version-heading h2 { font-size:21px; }
+.version-notes { padding-left:22px;margin:20px 0 0;line-height:1.9;color:#31543b; }
+.version-notes li + li { margin-top:10px; }
 @keyframes login-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .login-spinner { animation: none; } }
 </style>

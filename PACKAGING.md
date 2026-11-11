@@ -25,7 +25,7 @@ EXE版本由FastAPI同时提供前端静态页面和/api接口，默认统一使
 
 server.desktop.listen-host：默认0.0.0.0，允许其它设备连接。
 server.desktop.port：默认5173。
-server.desktop.browser-host：用于启动提示和浏览器地址，示例配置为 127.0.0.1。服务监听地址由 listen-host 决定。
+server.environments.local/production.browser-host：分别用于当前环境的启动提示和浏览器地址。服务监听地址由 desktop.listen-host 决定。
 server.desktop.open-browser：默认true，启动成功后在运行 EXE 的电脑上打开浏览器。
 server.environments中的port仍用于源码模式backend/run.py；EXE模式使用desktop.port。
 

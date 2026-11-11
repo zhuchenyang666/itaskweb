@@ -1,4 +1,8 @@
 from datetime import date
+from contextlib import ExitStack
+from functools import cmp_to_key
+from heapq import merge
+from itertools import islice
 import calendar
 from decimal import Decimal
 from typing import Annotated, Literal
@@ -6,7 +10,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from sqlalchemy import select, delete, or_, func, text, cast, String
+from sqlalchemy import select, delete, or_, func, text, cast, String, case
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -234,19 +238,116 @@ def filtered_records(year, month, day, keyword, include_inactive, people):
                                WorkRecord.user_id.in_(ids)))
     return query
 
+def record_order(sort, people):
+    columns = {
+        "work_date": WorkRecord.work_date,
+        "name": None,
+        "project": WorkRecord.project,
+        "task_type": WorkRecord.task_type,
+        "description": WorkRecord.description,
+        "hours": WorkRecord.hours_tenths,
+        "code_lines": WorkRecord.code_lines,
+    }
+    directions = {}
+    for entry in sort or ():
+        field, _, direction = entry.partition(":")
+        if field not in columns or direction not in ("asc", "desc", "none") or field in directions:
+            raise HTTPException(422, "工时排序条件无效")
+        directions[field] = direction
+    if directions.get("name") in ("asc", "desc"):
+        columns["name"] = case({u.id: u.name for u in people.values()}, value=WorkRecord.user_id, else_="未知用户")
+    order = [column.asc() if directions[field] == "asc" else column.desc()
+             for field, column in columns.items() if directions.get(field) in ("asc", "desc")]
+    if "work_date" not in directions:
+        order.append(WorkRecord.work_date.asc())
+    fields = [(field, directions[field]) for field in columns if directions.get(field) in ("asc", "desc")]
+    if "work_date" not in directions:
+        fields.append(("work_date", "asc"))
+    return [*order, WorkRecord.id.desc()], [*fields, ("id", "desc")]
+
+
+def date_boundary(value, end=False):
+    if not value:
+        return date(2100, 12, 31) if end else date(1900, 1, 1)
+    try:
+        parts = value.split("-")
+        if len(parts) not in (1, 2, 3) or len(parts[0]) != 4 or any(len(p) != 2 for p in parts[1:]):
+            raise ValueError()
+        year = int(parts[0])
+        month = int(parts[1]) if len(parts) >= 2 else 12 if end else 1
+        day = int(parts[2]) if len(parts) == 3 else calendar.monthrange(year, month)[1] if end else 1
+        if not 1900 <= year <= 2100:
+            raise ValueError()
+        return date(year, month, day)
+    except (ValueError, OverflowError):
+        raise HTTPException(422, "日期条件应为1900至2100年的 YYYY、YYYY-MM 或 YYYY-MM-DD")
+
+
 @router.get("/records")
-def records(request: Request, year: Year, month: int | None=Query(None, ge=1, le=12),
+def records(request: Request, year: int | None=Query(None, ge=1900, le=2100), month: int | None=Query(None, ge=1, le=12),
             day: int | None=Query(None, ge=1, le=31), keyword: str=Query("", max_length=200),
             page: int=Query(1, ge=1), page_size: int=Query(10, ge=1, le=100), include_inactive: bool=True,
+            sort: list[str] | None=Query(None, max_length=7),
+            start: str=Query("", max_length=10), end: str=Query("", max_length=10),
+            name: str=Query("", max_length=80), project: str=Query("", max_length=200),
+            task_type: str=Query("", max_length=80), description: str=Query("", max_length=4000),
+            remark: str=Query("", max_length=2000),
+            hours_min: Decimal | None=Query(None, ge=0, le=24), hours_max: Decimal | None=Query(None, ge=0, le=24),
+            code_min: int | None=Query(None, ge=0, le=10000000), code_max: int | None=Query(None, ge=0, le=10000000),
             user: User=Depends(current_user), accounts: Session=Depends(get_db)):
+    lower, upper = date_boundary(start), date_boundary(end, end=True)
+    if lower > upper or (hours_min is not None and hours_max is not None and hours_min > hours_max) or (code_min is not None and code_max is not None and code_min > code_max):
+        raise HTTPException(422, "筛选范围的起始值不能大于结束值")
+    if (month or day) and year is None:
+        raise HTTPException(422, "单月或单日筛选需要指定年份")
     people = {u.id: u for u in accounts.scalars(select(User))}
     query = filtered_records(year, month, day, keyword, include_inactive, people)
+    query = query.where(WorkRecord.work_date >= lower, WorkRecord.work_date <= upper)
+    if name:
+        query = query.where(WorkRecord.user_id.in_([u.id for u in people.values() if name.casefold() in u.name.casefold()]))
+    for column, term in ((WorkRecord.project, project), (WorkRecord.task_type, task_type),
+                         (WorkRecord.description, description), (WorkRecord.remark, remark)):
+        if term:
+            query = query.where(column.contains(term, autoescape=True))
+    for column, minimum, maximum in ((WorkRecord.hours_tenths, hours_min, hours_max),
+                                     (WorkRecord.code_lines, code_min, code_max)):
+        factor = 10 if column is WorkRecord.hours_tenths else 1
+        if minimum is not None:
+            query = query.where(column >= minimum * factor)
+        if maximum is not None:
+            query = query.where(column <= maximum * factor)
     if user.role != "admin":
         query = query.where(WorkRecord.user_id == user.id)
-    with Session(request.app.state.database.year_engine(year)) as db:
-        total = db.scalar(select(func.count()).select_from(query.subquery()))
-        hours = db.scalar(select(func.sum(query.subquery().c.hours_tenths))) or 0
-        rows = db.scalars(query.order_by(WorkRecord.work_date.desc(), WorkRecord.id.desc()).offset((page-1)*page_size).limit(page_size))
+    order, fields = record_order(sort, people)
+
+    def compare(left, right):
+        for field, direction in fields:
+            if field == "name":
+                a, b = (people[r.user_id].name if r.user_id in people else "未知用户" for r in (left, right))
+            else:
+                attribute = "hours_tenths" if field == "hours" else field
+                a, b = getattr(left, attribute), getattr(right, attribute)
+            difference = (a > b) - (a < b)
+            if difference:
+                return difference if direction == "asc" else -difference
+        return 0
+
+    database = request.app.state.database
+    if year is not None:
+        years = [year]
+    else:
+        with database.lock:
+            years = sorted(y for y in database.years if lower.year <= y <= upper.year)
+    total = hours = 0
+    with ExitStack() as stack:
+        streams = []
+        for selected in years:
+            db = stack.enter_context(Session(database.year_engine(selected)))
+            count, subtotal = db.execute(select(func.count(), func.sum(query.subquery().c.hours_tenths))).one()
+            total += count
+            hours += subtotal or 0
+            streams.append(db.scalars(query.order_by(*order).execution_options(yield_per=100)))
+        rows = islice(merge(*streams, key=cmp_to_key(compare)), (page-1)*page_size, page*page_size)
         return {"items": [record_dict(r, people) for r in rows], "total": total, "hours": hours/10}
 
 @router.post("/records", status_code=201)

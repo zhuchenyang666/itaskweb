@@ -68,6 +68,83 @@ class BusinessTests(unittest.TestCase):
         self.login("admin")
         self.assertEqual(self.client.get(path, params={"field": "project", "user_id": owner, "q": "旧"}).json(), ["旧项目"])
 
+    def test_cross_year_column_filters_and_global_pagination(self):
+        self.register()
+        self.login()
+        self.client.put("/api/profile", json={"name":"Alpha", "position":"工程师"})
+        for day, hours, lines, project in (
+            ("2024-02-29", 2, 10, "A%平台"), ("2025-12-31", 4, 20, "A%平台"),
+            ("2026-01-01", 6, 30, "A%平台"), ("2026-02-28", 8, 40, "B平台"),
+            ("2026-03-01", 10, 50, "B平台"),
+        ):
+            body = dict(self.entry(), work_date=day, hours=hours, code_lines=lines, project=project, remark="已记录")
+            self.assertEqual(self.client.post("/api/records", json=body).status_code, 201)
+        self.assertEqual(self.client.get("/api/records").json()["total"], 5)
+        result = self.client.get("/api/records", params={"sort":"hours:desc","page_size":2,"page":2}).json()
+        self.assertEqual((result["total"], result["hours"]), (5, 30))
+        self.assertEqual([row["hours"] for row in result["items"]], [6,4])
+        self.assertEqual(self.client.get("/api/records?start=2025&end=2026-01").json()["total"], 2)
+        self.assertEqual(self.client.get("/api/records?end=2024-02").json()["total"], 1)
+        self.assertEqual(self.client.get("/api/records?start=2030&end=2031").json()["total"], 0)
+        self.assertFalse((self.root / "2030").exists())
+
+        self.register("Worker02")
+        self.login("Worker02")
+        self.client.post("/api/records", json=dict(self.entry(), project="A%平台", remark="已记录"))
+        self.assertEqual(self.client.get("/api/records?name=Alpha").json()["total"], 0)
+        self.login("admin")
+        params = {"start":"2025", "end":"2026-01", "name":"lph", "project":"%",
+                  "task_type":"开发", "description":"实现", "remark":"记录",
+                  "hours_min":4, "hours_max":6, "code_min":20, "code_max":30}
+        self.assertEqual(self.client.get("/api/records", params=params).json()["total"], 2)
+        narrowed = self.client.get("/api/records", params=dict(params, keyword="2026")).json()
+        self.assertEqual((narrowed["total"], narrowed["hours"]), (1,6))
+        alpha = next(user for user in self.client.get("/api/users").json() if user["name"] == "Alpha")
+        self.client.delete(f'/api/users/{alpha["id"]}')
+        self.assertEqual(self.client.get("/api/records?include_inactive=false").json()["total"], 1)
+        for query in ("start=2026-02-30", "start=2027&end=2026", "hours_min=8&hours_max=2",
+                      "code_min=100&code_max=1", "start=1800", "code_min=1.5"):
+            self.assertEqual(self.client.get("/api/records?" + query).status_code, 422, query)
+
+    def test_record_sort_combines_columns_before_pagination(self):
+        self.register("ZuluUser")
+        self.register("AlphaUser")
+        self.login("admin")
+        people = {user["name"]: user["id"] for user in self.client.get("/api/users").json()}
+        for name, work_date, hours, lines in (
+            ("ZuluUser", "2026-11-05", 9, 100),
+            ("AlphaUser", "2026-11-05", 2, 20),
+            ("AlphaUser", "2026-11-05", 10, 2),
+            ("ZuluUser", "2026-11-04", 5, 10),
+            ("AlphaUser", "2026-12-01", 1, 1),
+        ):
+            entry = dict(self.entry(), user_id=people[name], work_date=work_date, hours=hours, code_lines=lines)
+            self.assertEqual(self.client.post("/api/records", json=entry).status_code, 201)
+
+        def items(*sort, page=1, size=2):
+            params = [("year", 2026), ("month", 11), ("page", page), ("page_size", size)]
+            response = self.client.get("/api/records", params=params + [("sort", value) for value in sort])
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["total"], 4)
+            return response.json()["items"]
+
+        combined = ("name:asc", "hours:desc", "work_date:asc")
+        self.assertEqual([(row["name"], row["hours"]) for row in items(*combined)],
+                         [("ZuluUser", 5), ("AlphaUser", 10)])
+        self.assertEqual([(row["name"], row["hours"]) for row in items(*combined, page=2)],
+                         [("AlphaUser", 2), ("ZuluUser", 9)])
+        self.assertEqual([row["code_lines"] for row in items("code_lines:asc", size=4)], [2, 10, 20, 100])
+        self.assertEqual([row["hours"] for row in items(size=4)], [5, 10, 2, 9])
+        self.assertEqual([row["hours"] for row in items("work_date:desc", size=4)], [10, 2, 9, 5])
+        all_ascending = ("work_date:asc", "name:asc", "project:asc", "task_type:asc",
+                         "description:asc", "hours:asc", "code_lines:asc")
+        self.assertEqual([row["hours"] for row in items(*all_ascending, size=4)], [5, 2, 10, 9])
+        self.assertEqual([row["hours"] for row in items("work_date:none", "name:asc", "hours:desc", size=4)],
+                         [10, 2, 9, 5])
+        no_sort = tuple(value.replace(":asc", ":none") for value in all_ascending)
+        self.assertEqual([row["hours"] for row in items(*no_sort, size=4)], [5, 10, 2, 9])
+        self.assertEqual(self.client.get("/api/records?year=2026&sort=remark:asc").status_code, 422)
+
     def test_admin_disable_reset_profile_and_export(self):
         self.register()
         self.login()

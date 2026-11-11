@@ -7,18 +7,50 @@ import ThemeSelect from './ThemeSelect.vue'
 import ThemeDialog from './ThemeDialog.vue'
 import RecordHistoryField from './RecordHistoryField.vue'
 import ThemeDatePicker from './ThemeDatePicker.vue'
-import { daysInMonth, clampPage } from './table'
+import RecordColumnFilter from './RecordColumnFilter.vue'
+import { clampPage, partialDate, recordFilterError } from './table'
 const props = defineProps(['user', 'page'])
 const emit = defineEmits(['updated', 'expired', 'export-state'])
 const today = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date())
-const year = ref(Number(today.slice(0,4))), month = ref(''), day = ref(''), keyword = ref(''), pageNumber = ref(1)
-const pageSize = ref(20), jump = ref(1), showInactive = ref(true), stats = ref(null)
-const dayCount = computed(() => daysInMonth(year.value, month.value))
-const filteredUsers = computed(() => users.value.filter(u => (showInactive.value || u.is_active) && [u.username,u.name,u.position,u.role === 'admin' ? '管理员' : '普通用户',u.is_active ? '正常' : '已停用'].some(v => v.toLowerCase().includes(keyword.value.toLowerCase()))))
-const userRows = computed(() => filteredUsers.value.slice((pageNumber.value-1)*pageSize.value,pageNumber.value*pageSize.value))
+const currentYear = Number(today.slice(0,4))
+const recordFilters = reactive({
+  start:{year:'',month:'',day:''}, end:{year:'',month:'',day:''},
+  name:'',project:'',task_type:'',description:'',remark:'',
+  hours_min:'',hours_max:'',code_min:'',code_max:'',
+  keyword:'',showInactive:true,pageNumber:1,pageSize:20,jump:1,
+})
+const userFilters = reactive({keyword:'', showInactive:true, pageNumber:1, pageSize:20, jump:1})
+const statsFilters = reactive({year:currentYear, showInactive:true})
+const pagination = computed(() => props.page === '用户管理' ? userFilters : recordFilters)
+const stats = ref(null)
+const filterError = computed(() => recordFilterError(recordFilters))
+const exportDialog = ref(false), exportYear = ref(currentYear)
+const exportIncludeInactive = ref(false)
+const filteredUsers = computed(() => users.value.filter(u => (userFilters.showInactive || u.is_active) && [u.username,u.name,u.position,u.role === 'admin' ? '管理员' : '普通用户',u.is_active ? '正常' : '已停用'].some(v => v.toLowerCase().includes(userFilters.keyword.toLowerCase()))))
+const userRows = computed(() => filteredUsers.value.slice((userFilters.pageNumber-1)*userFilters.pageSize,userFilters.pageNumber*userFilters.pageSize))
 const rowTotal = computed(() => props.page === '用户管理' ? filteredUsers.value.length : total.value)
-const pageCount = computed(() => Math.max(1,Math.ceil(rowTotal.value/pageSize.value)))
+const pageCount = computed(() => Math.max(1,Math.ceil(rowTotal.value/pagination.value.pageSize)))
+const sort = reactive({
+  work_date:'asc', name:'none', project:'none', task_type:'none',
+  description:'none', hours:'none', code_lines:'none',
+})
+const sortColumns = computed(() => [
+  ['work_date', '日期'],
+  ...(props.user.role === 'admin' ? [['name', '填报人']] : []),
+  ['project', '所属项目'], ['task_type', '任务类型'], ['description', '任务描述'],
+  ['hours', '工时(h)'], ['code_lines', '有效代码行'],
+])
+const primarySort = computed(() => sortColumns.value.find(([field]) => sort[field] !== 'none')?.[0])
 const rows = ref([]), users = ref([]), taskTypes = ref([]), total = ref(0), hours = ref(0)
+const selected = ref([])
+const rowKey = row => props.page === '用户管理' ? String(row.id) : row.work_date.slice(0,4)+'/'+row.id
+const selectableRows = computed(() => props.page === '用户管理'
+  ? userRows.value.filter(user => user.role !== 'admin' && user.is_active)
+  : props.page === '工时记录' ? rows.value : [])
+const selectedRows = computed(() => selectableRows.value.filter(row => selected.value.includes(rowKey(row))))
+const allSelected = computed(() => selectableRows.value.length > 0 && selectedRows.value.length === selectableRows.value.length)
+function selectAll(checked) { selected.value = checked ? selectableRows.value.map(rowKey) : [] }
+watch(() => selectableRows.value.map(rowKey), keys => { selected.value = selected.value.filter(key => keys.includes(key)) })
 const error = ref(''), notice = ref(''), busy = ref(false)
 const editor = ref(null), oldYear = ref(null), addingUser = ref(false), newUsername = ref(''), newName = ref('')
 const profile = reactive({name: props.user.name, position: props.user.position})
@@ -68,13 +100,17 @@ function answer(value) {
   resolveConfirmation = null
 }
 function filterParams() {
-  const params = new URLSearchParams({year:year.value,keyword:keyword.value,include_inactive:showInactive.value})
-  if(month.value) params.set('month',month.value)
-  if(month.value && day.value) params.set('day',day.value)
+  const params = new URLSearchParams({keyword:recordFilters.keyword,include_inactive:recordFilters.showInactive})
+  for(const field of ['start','end']) {
+    const date = partialDate(recordFilters[field])
+    if(date) params.set(field,date)
+  }
+  for(const field of ['name','project','task_type','description','remark','hours_min','hours_max','code_min','code_max']) {
+    if(recordFilters[field] !== '') params.set(field,recordFilters[field])
+  }
+  for(const [field] of sortColumns.value) params.append('sort', field + ':' + sort[field])
   return params
 }
-const monthOptions = [{value:'',label:'全部'},...Array.from({length:12},(_,i) => ({value:i+1,label:(i+1)+'月'}))]
-const dayOptions = computed(() => [{value:'',label:'全部'},...Array.from({length:dayCount.value},(_,i) => ({value:i+1,label:(i+1)+'日'}))])
 const personOptions = computed(() => users.value.filter(u => u.role !== "admin").map(u => ({value:u.id,label:u.name+' ('+u.username+')'+(u.is_active ? '' : ' · 已停用')})))
 const typeOptions = computed(() => [...new Set([...taskTypes.value,...(record.task_type ? [record.task_type] : [])])].map(t => ({value:t,label:t})))
 const sizeOptions = [10,20,30,40,50,100].map(n => ({value:n,label:n+'条'}))
@@ -86,9 +122,11 @@ async function run(action, success = '') {
   finally { busy.value = false }
 }
 async function load() {
+  clearTimeout(filterTimer)
   const current = ++generation
-  if(props.page === '个人信息') { busy.value = false; return }
-  if(['工时记录','首页总览'].includes(props.page) && (!Number.isInteger(year.value) || year.value < 1900 || year.value > 2100)) { busy.value = false; return }
+  if(['个人信息','账户管理'].includes(props.page)) { busy.value = false; return }
+  const year = statsFilters.year
+  if((props.page === '首页总览' && (!Number.isInteger(year) || year < 1900 || year > 2100)) || (props.page === '工时记录' && filterError.value)) { busy.value = false; return }
   busy.value = true; error.value = ''
   try {
     if(props.page === '通用设置') {
@@ -102,23 +140,32 @@ async function load() {
       users.value = data
     }
     if(props.page === '用户管理') {
-      pageNumber.value = clampPage(pageNumber.value, filteredUsers.value.length, pageSize.value)
+      userFilters.pageNumber = clampPage(userFilters.pageNumber, filteredUsers.value.length, userFilters.pageSize)
+      userFilters.jump = userFilters.pageNumber
       return
     }
     if(props.page === '首页总览') {
       if(props.user.role !== 'admin') return
-      const key = year.value+'-'+showInactive.value
+      const key = year+'-'+statsFilters.showInactive
       const cached = statsCache.get(key)
       if(cached) { stats.value = cached.data; if(Date.now()-cached.at < 30000) return }
       else stats.value = null
-      const data = await request('statistics?' + new URLSearchParams({year:year.value,include_inactive:showInactive.value}))
+      const data = await request('statistics?' + new URLSearchParams({year,include_inactive:statsFilters.showInactive}))
       if(current === generation) { stats.value = data; statsCache.set(key,{data,at:Date.now()}) }
       return
     }
     const query = filterParams()
-    query.set('page',pageNumber.value); query.set('page_size',pageSize.value)
-    const data = await request('records?' + query)
+    const { pageNumber, pageSize } = recordFilters
+    query.set('page',pageNumber); query.set('page_size',pageSize)
+    let data = await request('records?' + query)
     if(current !== generation) return
+    const page = clampPage(pageNumber, data.total, pageSize)
+    if(page !== pageNumber) {
+      query.set('page',page)
+      data = await request('records?' + query)
+    }
+    if(current !== generation) return
+    recordFilters.pageNumber = recordFilters.jump = page
     rows.value = data.items; total.value = data.total; hours.value = data.hours
   } catch(e) {
     if(current !== generation) return
@@ -129,18 +176,30 @@ async function load() {
 }
 let filterTimer
 function scheduleLoad() {
+  selected.value = []
   clearTimeout(filterTimer)
   generation++
-  pageNumber.value = 1; jump.value = 1
+  if(['工时记录','用户管理'].includes(props.page)) pagination.value.pageNumber = pagination.value.jump = 1
   filterTimer = setTimeout(load, 250)
 }
-watch([year,month], () => { if(!month.value || Number(day.value) > dayCount.value) day.value = '' }, {flush:'sync'})
-watch([year,month,day,keyword,showInactive,pageSize], scheduleLoad)
-function reset() { month.value = ''; day.value = ''; keyword.value = ''; showInactive.value = true; scheduleLoad() }
+watch(() => [filterParams().toString(), recordFilters.pageSize], () => {
+  if(props.page === '工时记录') scheduleLoad()
+})
+watch(() => [userFilters.keyword, userFilters.showInactive, userFilters.pageSize], scheduleLoad)
+watch(() => [statsFilters.year, statsFilters.showInactive], scheduleLoad)
+function reset() {
+  if(props.page === '用户管理') Object.assign(userFilters, {keyword:'', showInactive:true})
+  else {
+    for(const parts of [recordFilters.start,recordFilters.end]) Object.assign(parts,{year:'',month:'',day:''})
+    for(const field of ['name','project','task_type','description','remark','hours_min','hours_max','code_min','code_max','keyword']) recordFilters[field]=''
+    recordFilters.showInactive=true
+  }
+  scheduleLoad()
+}
 function goToPage(value) {
-  clearTimeout(filterTimer)
-  pageNumber.value = clampPage(value,rowTotal.value,pageSize.value)
-  jump.value = pageNumber.value
+  selected.value = []
+  const table = pagination.value
+  table.pageNumber = table.jump = clampPage(value,rowTotal.value,table.pageSize)
   load()
 }
 onUnmounted(() => { clearTimeout(filterTimer); generation++; resolveConfirmation?.(false); emit('export-state',false) })
@@ -156,9 +215,7 @@ async function saveRecord() {
     const body = {...record, user_id:Number(record.user_id), hours:Number(record.hours), code_lines:Number(record.code_lines)}
     statsCache.clear()
     await request(editor.value === 'new' ? 'records' : 'records/' + oldYear.value + '/' + editor.value, editor.value === 'new' ? 'POST' : 'PUT', body)
-    year.value = Number(record.work_date.slice(0,4))
     editor.value = null
-    month.value = ''; day.value = ''; keyword.value = ''; pageNumber.value = 1
     notice.value = '工时已保存'
   })
   if(!error.value) await load()
@@ -167,7 +224,39 @@ async function remove(row) {
   if(!await ask('确定删除这条工时记录？')) return
   statsCache.clear()
   await run(() => request('records/' + row.work_date.slice(0,4) + '/' + row.id, 'DELETE'), '工时已删除')
-  if(!error.value) { pageNumber.value = 1; await load() }
+  if(!error.value) await load()
+}
+async function deleteSelected() {
+  const targets = [...selectedRows.value]
+  if(!targets.length || busy.value) return
+  const page = props.page, isUsers = page === '用户管理'
+  const keys = targets.map(rowKey)
+  const prompt = isUsers
+    ? '确定批量停用选中的 '+targets.length+' 位用户？账号和历史工时将保留。'
+    : '确定删除选中的 '+targets.length+' 条工时记录？'
+  if(!await ask(prompt)) return
+  let deleted = 0, expired = false
+  const failed = []
+  await run(async () => {
+    for(let index=0; index<targets.length; index++) {
+      try {
+        await request((isUsers ? 'users/' : 'records/')+keys[index], 'DELETE')
+        deleted++
+      } catch(e) {
+        failed.push(keys[index])
+        if(e.status === 401 || !e.status || e.status >= 500) {
+          failed.push(...keys.slice(index+1))
+          if(e.status === 401) { expired = true; emit('expired') }
+          break
+        }
+      }
+    }
+    if(deleted) statsCache.clear()
+    if(props.page === page) selected.value = failed
+  })
+  if(!expired) await load()
+  const action = isUsers ? '停用用户' : '删除记录'
+  notify(failed.length ? '已'+action+' '+deleted+' 项，'+failed.length+' 项失败，可重试' : '已'+action+' '+deleted+' 项', failed.length ? 'error' : 'success')
 }
 async function userAction(target, action) {
   const message = action === 'disable' ? '停用后该用户不能登录，历史工时仍保留。确定继续？' : action === 'enable' ? '确定启用该用户？启用后可使用原密码登录。' : '确定将密码重置为123456？该用户已有登录将失效。'
@@ -183,14 +272,21 @@ async function addUser() {
 async function saveProfile() {
   await run(async () => { emit('updated', await request('profile','PUT',profile)); notice.value = '个人信息已保存' })
 }
+function openExport() {
+  exportYear.value = currentYear
+  exportDialog.value = true
+}
 async function exportFile() {
   if(exporting.value) return
+  if(!Number.isInteger(exportYear.value) || exportYear.value < 1900 || exportYear.value > 2100) return
+  const selectedYear = exportYear.value
+  const includeInactive = exportIncludeInactive.value
+  exportDialog.value = false
   exporting.value = true
   exportStage.value = '正在计算全年统计并生成 Excel 文件'
   emit('export-state',true)
   try {
-    const selectedYear = year.value
-    const response = await fetch('/api/export?' + new URLSearchParams({year:year.value,include_inactive:showInactive.value}),{credentials:'same-origin',signal:AbortSignal.timeout(600000)})
+    const response = await fetch('/api/export?' + new URLSearchParams({year:selectedYear,include_inactive:includeInactive}),{credentials:'same-origin',signal:AbortSignal.timeout(600000)})
     if(!response.ok) {
       let data; try { data = await response.json() } catch { throw new Error('导出服务响应异常') }
       const e = new Error(typeof data.detail === 'string' ? data.detail : '导出失败')
@@ -209,7 +305,7 @@ async function exportFile() {
     if(e.status === 401) emit('expired')
   } finally { exporting.value = false; emit('export-state',false) }
 }
-watch(() => props.page, () => { editor.value = null; taskEditor.value = null; keyword.value = ''; pageNumber.value = 1; jump.value = 1; Object.assign(profile, {name:props.user.name,position:props.user.position}); clearTimeout(filterTimer); load() })
+watch(() => props.page, () => { selected.value = []; editor.value = null; taskEditor.value = null; addingUser.value = false; exportDialog.value = false; Object.assign(profile, {name:props.user.name,position:props.user.position}); load() })
 onMounted(async () => {
   await run(async () => { taskTypes.value = (await request('options')).task_types })
   await load()
@@ -235,38 +331,49 @@ onMounted(async () => {
       </table></div>
     </template>
     <template v-else-if="page === '用户管理'">
-      <div class="toolbar"><p class="subtitle">停用用户会保留全部历史工时及账号。</p><button class="primary" :disabled="busy" @click="addingUser = true">添加用户</button></div>
-      <div class="filters"><label class="keyword">关键词<input id="user-search" v-model="keyword" placeholder="账号、姓名、职位或状态" /></label><label class="checkbox"><input v-model="showInactive" type="checkbox" />显示停用人员</label><button type="button" class="text-button" @click="reset">重置</button></div>
+      <div class="toolbar"><p class="subtitle">停用用户会保留全部历史工时及账号。</p><div class="summary-actions"><button class="batch-delete" :disabled="busy || !selectedRows.length" @click="deleteSelected">批量删除</button><button class="primary" :disabled="busy" @click="addingUser = true">添加用户</button></div></div>
+      <div class="filters"><label class="keyword">关键词<input id="user-search" v-model="userFilters.keyword" placeholder="账号、姓名、职位或状态" /></label><label class="checkbox"><input v-model="userFilters.showInactive" type="checkbox" />显示停用人员</label><button type="button" class="text-button" @click="reset">重置</button></div>
       <p class="subtitle">共 {{ filteredUsers.length }} 位用户</p>
-      <div class="table-scroll"><table class="users-table"><colgroup><col style="width:52px" /><col style="width:30%" /><col /><col /><col /><col /><col style="width:190px" /></colgroup><thead><tr><th class="serial" title="序号">序号</th><th title="账号">账号</th><th title="姓名">姓名</th><th title="职位">职位</th><th title="角色">角色</th><th title="状态">状态</th><th title="操作">操作</th></tr></thead>
+      <div class="table-scroll"><table class="users-table"><colgroup><col style="width:40px" /><col style="width:52px" /><col style="width:30%" /><col /><col /><col /><col /><col style="width:190px" /></colgroup><thead><tr><th class="selection-cell"><input type="checkbox" :checked="allSelected" :indeterminate="selectedRows.length > 0 && !allSelected" :disabled="busy || !selectableRows.length" aria-label="全选当前页可停用用户" @change="selectAll($event.target.checked)" /></th><th class="serial" title="序号">序号</th><th title="账号">账号</th><th title="姓名">姓名</th><th title="职位">职位</th><th title="角色">角色</th><th title="状态">状态</th><th title="操作">操作</th></tr></thead>
       <tbody><tr v-for="(target,index) in userRows" :key="target.id" :class="{inactive: !target.is_active}">
-        <td class="serial" :title="(pageNumber-1)*pageSize+index+1">{{ (pageNumber-1)*pageSize+index+1 }}</td><td :title="target.username">{{ target.username }}</td><td :title="target.name">{{ target.name }}</td><td :title="target.position">{{ target.position }}</td><td :title="target.role === 'admin' ? '管理员' : '普通用户'">{{ target.role === 'admin' ? '管理员' : '普通用户' }}</td><td :title="target.is_active ? '正常' : '已停用'">{{ target.is_active ? '正常' : '已停用' }}</td>
+        <td class="selection-cell"><input v-model="selected" type="checkbox" :value="String(target.id)" :disabled="busy || target.role === 'admin' || !target.is_active" :aria-label="'选择用户 '+target.name" /></td>
+        <td class="serial" :title="(userFilters.pageNumber-1)*userFilters.pageSize+index+1">{{ (userFilters.pageNumber-1)*userFilters.pageSize+index+1 }}</td><td :title="target.username">{{ target.username }}</td><td :title="target.name">{{ target.name }}</td><td :title="target.position">{{ target.position }}</td><td :title="target.role === 'admin' ? '管理员' : '普通用户'">{{ target.role === 'admin' ? '管理员' : '普通用户' }}</td><td :title="target.is_active ? '正常' : '已停用'">{{ target.is_active ? '正常' : '已停用' }}</td>
         <td class="actions"><template v-if="target.role !== 'admin'"><button class="text-button" title="重置密码" aria-label="重置密码" :disabled="busy" @click="userAction(target,'reset')">重置</button><button class="text-button" :title="target.is_active ? '停用' : '启用'" :class="{danger:target.is_active,'green-button':!target.is_active}" :disabled="busy" @click="userAction(target,target.is_active ? 'disable' : 'enable')">{{ target.is_active ? '停用' : '启用' }}</button></template><span v-else title="固定管理员">固定管理员</span></td>
       </tr></tbody></table></div>
     </template>
     <template v-else-if="page === '工时记录'">
       <form class="filters" @submit.prevent>
-        <label>年份<input v-model.number="year" type="number" min="1900" max="2100" required /></label>
-        <label>月份<ThemeSelect v-model="month" :options="monthOptions" label="月份" /></label>
-        <label>日<ThemeSelect v-model="day" :options="dayOptions" :disabled="!month" label="日" /></label>
-        <label class="keyword">关键词<input v-model="keyword" maxlength="200" placeholder="姓名、项目或任务" /></label>
-        <label v-if="user.role === 'admin'" class="checkbox"><input v-model="showInactive" type="checkbox" />显示停用人员</label><button type="button" class="text-button" @click="reset">重置</button>
+        <label class="keyword">关键词<input v-model="recordFilters.keyword" maxlength="200" placeholder="在各列筛选结果中继续搜索" /></label>
+        <label v-if="user.role === 'admin'" class="checkbox"><input v-model="recordFilters.showInactive" type="checkbox" />显示停用人员</label><button type="button" class="text-button" @click="reset">重置</button>
       </form>
-      <div class="toolbar summary"><span>{{ year }}年 · {{ user.role === 'admin' ? '全员' : '我的' }}工时明细 · {{ total }}条 / {{ hours }}小时</span><div class="summary-actions"><button v-if="user.role === 'admin'" class="primary" :disabled="exporting" @click="exportFile">导出年度统计</button><button class="primary" :disabled="busy" @click="openEditor(null)">新增记录</button></div></div>
-      <div class="table-scroll"><table class="records-table"><colgroup><col style="width:52px" /><col style="width:116px" /><col v-if="user.role === 'admin'" style="width:88px" /><col style="width:166px" /><col style="width:104px" /><col /><col style="width:68px" /><col style="width:90px" /><col style="width:14%" /><col style="width:132px" /></colgroup><thead><tr><th class="serial" title="序号">序号</th><th title="日期">日期</th><th v-if="user.role === 'admin'" title="填报人">填报人</th><th title="所属项目">所属项目</th><th title="任务类型">任务类型</th><th title="任务描述">任务描述</th><th class="compact-cell" title="工时(h)">工时(h)</th><th class="compact-cell" title="有效代码行">有效代码行</th><th title="备注">备注</th><th title="操作">操作</th></tr></thead>
+      <p class="field-help">点击表头漏斗设置各列条件；日期范围留空时查询全部年份。</p>
+      <p v-if="filterError" class="filter-error" role="status">{{ filterError }}</p>
+      <div class="toolbar summary"><span>{{ user.role === 'admin' ? '全员' : '我的' }}工时明细 · {{ total }}条 / {{ hours }}小时</span><div class="summary-actions"><button class="batch-delete" :disabled="busy || !selectedRows.length" @click="deleteSelected">批量删除</button><button v-if="user.role === 'admin'" class="primary" :disabled="exporting" @click="openExport">导出年度统计</button><button class="primary" :disabled="busy" @click="openEditor(null)">新增记录</button></div></div>
+      <div class="table-scroll records-scroll" tabindex="0" role="region" aria-label="工时记录，可左右滚动"><table class="records-table"><colgroup><col style="width:40px" /><col style="width:52px" /><col style="width:116px" /><col v-if="user.role === 'admin'" style="width:88px" /><col style="width:166px" /><col style="width:104px" /><col style="width:360px" /><col style="width:84px" /><col style="width:108px" /><col style="width:220px" /><col style="width:132px" /></colgroup>
+      <thead><tr><th class="selection-cell"><input type="checkbox" :checked="allSelected" :indeterminate="selectedRows.length > 0 && !allSelected" :disabled="busy || !selectableRows.length" aria-label="全选当前页工时记录" @change="selectAll($event.target.checked)" /></th><th class="serial" title="序号">序号</th>
+        <th v-for="[field, label] in sortColumns" :key="field" class="record-heading" :class="{ 'compact-heading':field === 'hours' || field === 'code_lines' }"
+            :aria-sort="field === primarySort ? (sort[field] === 'desc' ? 'descending' : 'ascending') : undefined">
+          <div class="column-heading">
+          {{ label }}
+          <RecordColumnFilter :field="field" :label="label" :filters="recordFilters" :sort="sort" />
+          </div>
+        </th>
+        <th title="备注"><div class="column-heading">备注<RecordColumnFilter field="remark" label="备注" :filters="recordFilters" /></div></th><th title="操作">操作</th>
+      </tr></thead>
       <tbody><tr v-for="(row,index) in rows" :key="row.work_date.slice(0,4) + '-' + row.id" :class="{inactive: !row.is_active}">
-        <td class="serial" :title="(pageNumber-1)*pageSize+index+1">{{ (pageNumber-1)*pageSize+index+1 }}</td><td :title="row.work_date">{{ row.work_date }}</td><td v-if="user.role === 'admin'" :title="row.name + (row.is_active ? '' : '（已停用）')">{{ row.name }}<span v-if="!row.is_active" class="sr-only">（已停用）</span></td>
+        <td class="selection-cell"><input v-model="selected" type="checkbox" :value="row.work_date.slice(0,4)+'/'+row.id" :disabled="busy" :aria-label="'选择 '+row.work_date+' '+row.name+' 的工时记录'" /></td>
+        <td class="serial" :title="(recordFilters.pageNumber-1)*recordFilters.pageSize+index+1">{{ (recordFilters.pageNumber-1)*recordFilters.pageSize+index+1 }}</td><td :title="row.work_date">{{ row.work_date }}</td><td v-if="user.role === 'admin'" :title="row.name + (row.is_active ? '' : '（已停用）')">{{ row.name }}<span v-if="!row.is_active" class="sr-only">（已停用）</span></td>
         <td :title="row.project">{{ row.project }}</td><td :title="row.task_type">{{ row.task_type }}</td><td :title="row.description">{{ row.description }}</td><td class="compact-cell" :title="row.hours.toFixed(1)">{{ row.hours.toFixed(1) }}</td><td class="compact-cell" :title="row.code_lines">{{ row.code_lines }}</td><td :title="row.remark || null">{{ row.remark }}</td>
         <td class="actions"><button class="text-button" title="编辑" :disabled="busy" @click="openEditor(row)">编辑</button><button class="text-button danger" title="删除" :disabled="busy" @click="remove(row)">删除</button></td>
-      </tr><tr v-if="!rows.length"><td :colspan="user.role === 'admin' ? 10 : 9" class="empty-row">{{ busy ? '正在加载…' : '暂无符合条件的工时记录' }}</td></tr></tbody></table></div>
+      </tr><tr v-if="!rows.length"><td :colspan="user.role === 'admin' ? 11 : 10" class="empty-row">{{ busy ? '正在加载…' : '暂无符合条件的工时记录' }}</td></tr></tbody></table></div>
     </template>
     <template v-else-if="page === '首页总览' && user.role === 'admin'">
-      <div class="filters"><label>统计年份<input v-model.number="year" type="number" min="1900" max="2100" /></label><label class="checkbox"><input v-model="showInactive" type="checkbox" />显示停用人员</label><p class="subtitle">与年度 XLSX 使用相同数据和统计口径</p></div>
+      <div class="filters"><label>统计年份<input v-model.number="statsFilters.year" type="number" min="1900" max="2100" /></label><label class="checkbox"><input v-model="statsFilters.showInactive" type="checkbox" />显示停用人员</label><p class="subtitle">与年度 XLSX 使用相同数据和统计口径</p></div>
       <template v-if="stats">
         <p class="field-help">饱和度：低于80%为黄色，80%–100%为绿色，高于100%为红色。年假计入实际工时，不计入项目投入和有效代码行。</p>
         <div class="charts-grid">
           <StatChart title="团队月度饱和度" :rows="stats.teamMonthly" label="month" value="saturation" kind="line" unit="%" />
-          <StatChart title="任务类型工时占比" :rows="stats.tasks.filter(t => t.hours > 0)" label="taskType" value="hours" kind="pie" unit="小时" />
+          <StatChart title="任务类型工时占比" :rows="stats.tasks.filter(t => t.hours > 0)" label="taskType" value="share" kind="bar" unit="%" />
           <StatChart title="月度实际工时" :rows="stats.teamMonthly" label="month" value="actualHours" kind="bar" unit="小时" />
           <StatChart title="项目投入工时（不含年假）" :rows="stats.projects" label="project" value="hours" kind="bar" unit="小时" />
           <StatChart title="个人年度饱和度" :rows="stats.personalYearly" label="person" value="saturation" kind="bar" unit="%" />
@@ -277,9 +384,9 @@ onMounted(async () => {
       <p v-else-if="!busy && !error" class="empty-row">该年度暂无可统计的工时记录</p>
     </template>
     <div v-if="page === '工时记录' || page === '用户管理'" class="pagination">
-      <label>每页<ThemeSelect v-model="pageSize" :options="sizeOptions" label="每页条数" /></label>
-      <span>共 {{ rowTotal }} 条</span><button :disabled="busy || pageNumber <= 1" @click="goToPage(pageNumber-1)">上一页</button><span>{{ pageNumber }} / {{ pageCount }}</span><button :disabled="busy || pageNumber >= pageCount" @click="goToPage(pageNumber+1)">下一页</button>
-      <form @submit.prevent="goToPage(jump)"><label>跳至<input v-model.number="jump" type="number" min="1" :max="pageCount" required />页</label><button :disabled="busy">跳转</button></form>
+      <label>每页<ThemeSelect v-model="pagination.pageSize" :options="sizeOptions" label="每页条数" /></label>
+      <span>共 {{ rowTotal }} 条</span><button :disabled="busy || pagination.pageNumber <= 1" @click="goToPage(pagination.pageNumber-1)">上一页</button><span>{{ pagination.pageNumber }} / {{ pageCount }}</span><button :disabled="busy || pagination.pageNumber >= pageCount" @click="goToPage(pagination.pageNumber+1)">下一页</button>
+      <form @submit.prevent="goToPage(pagination.jump)"><label>跳至<input v-model.number="pagination.jump" type="number" min="1" :max="pageCount" required />页</label><button :disabled="busy">跳转</button></form>
     </div>
     <ThemeDialog :open="editor !== null || addingUser" labelledby="dialog-title" @close="!busy && (editor = null, addingUser = false)">
         <div class="toolbar"><h2 id="dialog-title">{{ addingUser ? '添加用户' : editor === 'new' ? '新增工时' : '编辑工时' }}</h2><button :disabled="busy" class="close-button" type="button" aria-label="关闭窗口" title="关闭" @click="editor = null; addingUser = false"><span aria-hidden="true">×</span></button></div>
@@ -300,6 +407,17 @@ onMounted(async () => {
         </form>
     </ThemeDialog>
     <ThemeDialog :open="taskEditor !== null" labelledby="task-title" @close="!busy && (taskEditor = null)"><div class="toolbar"><h2 id="task-title">{{ taskEditor === 'new' ? '添加任务' : '编辑任务' }}</h2><button class="close-button" type="button" aria-label="关闭窗口" title="关闭" :disabled="busy" @click="taskEditor = null"><span aria-hidden="true">×</span></button></div><form @submit.prevent="saveTask"><label for="task-name">任务名称</label><input id="task-name" v-model="taskName" required maxlength="80" /><button class="primary submit" :disabled="busy">保存任务</button></form></ThemeDialog>
+    <ThemeDialog :open="exportDialog" labelledby="export-year-title" @close="exportDialog = false">
+      <div class="toolbar"><h2 id="export-year-title">选择年度统计年份</h2><button type="button" class="close-button" aria-label="关闭" @click="exportDialog = false">×</button></div>
+      <form @submit.prevent="exportFile">
+        <div class="export-options">
+          <label for="export-year">导出年份<input id="export-year" v-model.number="exportYear" type="number" min="1900" max="2100" required /></label>
+          <label class="checkbox"><input v-model="exportIncludeInactive" type="checkbox" />包含停用人员</label>
+        </div>
+        <p class="field-help">导出所选年份的完整年度统计。导出设置独立于浏览页面的筛选。</p>
+        <div class="confirmation-actions"><button type="button" class="cancel-button" @click="exportDialog = false">取消</button><button class="primary">导出年度统计</button></div>
+      </form>
+    </ThemeDialog>
     <ThemeDialog :open="exporting" labelledby="export-progress-title"><section class="export-progress" aria-busy="true"><h2 id="export-progress-title">正在导出年度统计</h2><p role="status">{{ exportStage }}</p><progress aria-label="年度统计导出进行中"></progress><p class="field-help">数据较多时可能需要几分钟，请勿刷新或关闭页面。完成后将自动下载。</p></section></ThemeDialog>
     <ThemeDialog :open="confirmationOpen" labelledby="confirmation-title" @close="answer(false)"><h2 id="confirmation-title">请确认操作</h2><p class="confirmation-message">{{ confirmation }}</p><div class="confirmation-actions"><button class="cancel-button" @click="answer(false)">取消</button><button class="primary" @click="answer(true)">确定</button></div></ThemeDialog>
   </section>
@@ -321,10 +439,20 @@ onMounted(async () => {
 .summary-actions{display:flex;align-items:center;gap:14px}
 .table-scroll{overflow-x:auto;border:1px solid #dfe7e1;margin-top:8px}
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:14px}
-.records-table{table-layout:fixed;min-width:1080px}
-.users-table{table-layout:fixed;min-width:800px}
+.records-scroll{width:100%;min-width:0;overflow-x:auto}
+.records-table{table-layout:fixed;min-width:1470px}
+.users-table{table-layout:fixed;min-width:840px}
+.batch-delete{padding:11px 24px;background:#fde7e4;color:#b33529;border:1px solid #efc0ba;border-radius:6px;font-weight:600}
+.batch-delete:hover:not(:disabled){background:#f9d6d0}
 th,td{padding:8px 12px;border-right:1px solid #e2e9e4;border-bottom:1px solid #e2e9e4;text-align:left;line-height:1.45}
 .compact-cell{padding-inline:8px}
+.record-heading{padding-inline:8px}
+.compact-heading{padding-inline:4px}
+.column-heading{display:flex;align-items:center;gap:2px;flex-wrap:nowrap;white-space:nowrap}
+.export-options{display:flex;align-items:end;gap:24px;flex-wrap:wrap}
+.export-options #export-year{width:120px}
+.export-options .checkbox input{width:16px;height:16px}
+.filter-error{color:#b33529;font-size:14px}
 th{background:#194a2b;color:#fff;font-weight:500;white-space:nowrap;position:sticky;top:0;z-index:2;height:40px}
 td:not(.actions,.empty-row){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 tbody tr{background:#fff;transition:background .12s}
@@ -334,6 +462,11 @@ tbody tr.inactive{background:#fff4ce}
 tbody tr.inactive:hover{background:#ffebb0}
 .serial{position:sticky;left:0;width:52px;min-width:52px;max-width:52px;text-align:center;background:inherit;z-index:1;padding:8px 6px}
 th.serial{background:#194a2b;z-index:3}
+.selection-cell{position:sticky;left:0;width:40px;text-align:center;background:inherit;z-index:1;padding:8px}
+th.selection-cell{background:#194a2b;z-index:3}
+.selection-cell input{width:16px;height:16px;margin:auto;cursor:pointer;accent-color:#287646}
+.selection-cell input:disabled{cursor:default}
+.records-table .serial,.users-table .serial{left:40px}
 .actions{white-space:nowrap}
 td .text-button{background:#e0f1e5;color:#206b38;border-radius:5px;padding:4px 9px;margin:1px;font-size:13px}
 td .text-button.danger{background:#fde7e4;color:#b33529;margin-left:5px}

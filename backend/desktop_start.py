@@ -13,13 +13,23 @@ from desktop_control import BASE, NAME, kernel, message, check_control
 from desktop_logs import DailyLog, maintain_logs
 import ctypes
 
+FRONTEND_PAGES = ("/records", "/overview", "/users", "/settings", "/account", "/profile")
+
 def packaged_app(data_dir=None):
     from app.main import create_app
+    from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
     frontend = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else BASE) / "frontend"
     if not (frontend / "index.html").is_file():
         raise FileNotFoundError("缺少前端构建文件，请重新打包工时服务。")
     app = create_app(data_dir)
+
+    async def frontend_page():
+        return FileResponse(frontend / "index.html")
+
+    for path in FRONTEND_PAGES:
+        for url in (path, path + "/"):
+            app.add_api_route(url, frontend_page, methods=["GET", "HEAD"], include_in_schema=False)
     app.mount("/",StaticFiles(directory=frontend,html=True),name="frontend")
     return app
 
@@ -32,7 +42,10 @@ async def check_app():
         async with app.router.lifespan_context(app):
             with Session(app.state.database.accounts) as db:
                 assert db.scalar(select(User).where(User.username=="admin")).role == "admin"
-            for path in ("/", "/api/auth/me", "/api/records/suggestions"):
+            checks = {path: 200 for path in ("/", *FRONTEND_PAGES, "/records/")}
+            checks.update({"/api/auth/me": 401, "/api/records/suggestions": 401,
+                           "/api/missing": 404, "/assets/missing.js": 404})
+            for path, expected in checks.items():
                 messages=[]
                 received=False
                 async def receive():
@@ -44,7 +57,6 @@ async def check_app():
                 async def send(msg):
                     messages.append(msg)
                 await app({"type":"http","asgi":{"version":"3.0","spec_version":"2.4"},"http_version":"1.1","method":"GET","scheme":"http","path":path,"raw_path":path.encode(),"query_string":b"","headers":[(b"host",b"localhost")],"client":("127.0.0.1",1),"server":("127.0.0.1",5173),"root_path":""},receive,send)
-                expected=200 if path=="/" else 401
                 assert messages[0]["status"] == expected, messages
     return {"ok":True,"control":check_control(),"python":sys.version,"frontend":True,"database":True,"api":True}
 
@@ -60,7 +72,7 @@ def show_startup(url, open_browser):
 def start(logs, streams):
     import uvicorn
     from app.settings import load_settings
-    server_config,_,_=load_settings()
+    server_config,_,environment=load_settings()
     desktop=server_config.get("desktop",{})
     log_config=desktop.get("logs",{})
     cleanup_time=datetime.strptime(log_config.get("cleanup-time", "01:00"), "%H:%M").time()
@@ -70,7 +82,7 @@ def start(logs, streams):
     host=desktop.get("listen-host","0.0.0.0")
     port=int(desktop.get("port",5173))
     if not 1 <= port <= 65535: raise ValueError("服务端口必须在1至65535之间")
-    browser_host=desktop.get("browser-host","127.0.0.1")
+    browser_host=environment.get("browser-host",desktop.get("browser-host","127.0.0.1"))
     url=f"http://{browser_host}:{port}/"
     mutex=kernel.CreateMutexW(None,True,NAME+"-running")
     if not mutex: raise ctypes.WinError(ctypes.get_last_error())
