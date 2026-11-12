@@ -22,6 +22,18 @@ class BusinessTests(unittest.TestCase):
         return dict(work_date="2026-11-04", project="平台", task_type="编码开发",
                     description="测试实现", hours=7.5, code_lines=100, remark="", **changes)
 
+    def test_column_checkbox_options_and_exclusions(self):
+        self.register(); self.login()
+        self.client.post('/api/records', json=self.entry())
+        self.client.post('/api/records', json=dict(self.entry(), work_date='2025-12-31', project='另一项目', hours=8, remark='完成'))
+        self.assertEqual(self.client.get('/api/records/filter-options?field=project').json(), [{'value':'另一项目','count':1}, {'value':'平台','count':1}])
+        self.assertEqual(self.client.get('/api/records/filter-options?field=remark').json(), [{'value':'','count':1}, {'value':'完成','count':1}])
+        self.assertEqual(self.client.get('/api/records/filter-options?field=hours').status_code, 422)
+        self.assertEqual(self.client.get('/api/records', params={'exclude':'project:平台'}).json()['total'], 1)
+        self.assertEqual(self.client.get('/api/records', params={'exclude':'remark:'}).json()['total'], 1)
+        self.assertEqual(self.client.get('/api/records', params={'exclude':'work_date:2026-11-04'}).json()['total'], 1)
+        self.assertEqual(self.client.get('/api/records', params={'exclude':'hours:7.5'}).json()['total'], 1)
+
     def test_ownership_filters_and_cross_year_move(self):
         self.register()
         self.login()
@@ -203,7 +215,7 @@ class BusinessTests(unittest.TestCase):
         self.register(); self.login()
         for n in range(25):
             self.client.post("/api/records", json=dict(self.entry(), description=f"说明{n}"))
-        self.assertEqual(self.client.get("/api/statistics?year=2026").status_code, 403)
+        self.assertEqual(self.client.get("/api/statistics?year=2026").json()["totalHours"], 25*7.5)
         self.assertEqual(self.client.get("/api/records?year=2026&month=2&day=31").status_code, 422)
         self.assertEqual(self.client.get("/api/records?year=2026&day=4").status_code, 422)
         self.assertEqual(self.client.get("/api/records?year=2024&month=2&day=29").status_code, 200)
@@ -216,13 +228,31 @@ class BusinessTests(unittest.TestCase):
         self.login("admin")
         stats = self.client.get("/api/statistics?year=2026").json()
         self.assertEqual(stats["totalHours"], 25*7.5)
-        self.assertEqual(stats["teamMonthly"][0]["actualHours"], 25*7.5)
+        self.assertEqual(len(stats["teamMonthly"]), 12)
+        self.assertEqual(stats["teamMonthly"][10]["actualHours"], 25*7.5)
         target = next(u for u in self.client.get("/api/users").json() if u["username"] == self.account("Worker01"))
         self.client.delete(f'/api/users/{target["id"]}')
         self.assertEqual(self.client.get("/api/records?year=2026&include_inactive=false").json()["total"],0)
         self.assertEqual(self.client.get("/api/records?year=2026&include_inactive=true").json()["total"],25)
-        self.assertIsNone(self.client.get("/api/statistics?year=2026").json())
+        self.assertEqual(self.client.get("/api/statistics?year=2026").json()["teamMonthly"][10]["actualHours"], 0)
         self.assertEqual(self.client.get("/api/statistics?year=2026&include_inactive=true").json()["totalHours"],25*7.5)
+
+    def test_regular_user_overview_shows_team_but_records_stay_private(self):
+        self.register(); self.login()
+        self.client.post('/api/records', json=self.entry())
+        self.register('Worker02'); self.login('Worker02')
+        self.client.post('/api/records', json=dict(self.entry(), hours=3))
+        team = self.client.get('/api/statistics', params={'year':2026,'include_inactive':True})
+        self.assertEqual(team.status_code, 200)
+        self.assertEqual((team.json()['totalHours'], team.json()['peopleCount']), (10.5, 2))
+        self.assertEqual(len(team.json()['teamMonthly']), 12)
+        self.assertEqual(self.client.get('/api/records?year=2026').json()['hours'], 3)
+        self.assertEqual(self.client.get('/api/export?year=2026').status_code, 403)
+        self.login('Worker01')
+        self.assertEqual(self.client.get('/api/statistics?year=2026').json()['totalHours'], 10.5)
+        self.assertEqual(self.client.get('/api/records?year=2026').json()['hours'], 7.5)
+        self.login('admin')
+        self.assertEqual(self.client.get('/api/statistics?year=2026').json()['totalHours'], 10.5)
 
     def test_export_uses_year_and_inactive_only(self):
         self.register(); self.login()
@@ -291,6 +321,23 @@ class BusinessTests(unittest.TestCase):
             rows=[r for r in workbook['工时打卡明细'].iter_rows(min_row=2,values_only=True) if r[0] is not None]
             self.assertEqual(len(rows),1)
             self.assertNotEqual(rows[0][7],'管理员(admin)')
+
+    def test_overview_includes_empty_months_and_people(self):
+        self.register('Worker01')
+        self.register('Worker02')
+        self.login('admin')
+        worker02 = next(u for u in self.client.get('/api/users').json() if u['username'] == self.account('Worker02'))
+        for include, expected_people in (('false', 2), ('true', 2)):
+            stats = self.client.get('/api/statistics', params={'year': 2026, 'include_inactive': include}).json()
+            self.assertEqual(len(stats['teamMonthly']), 12)
+            self.assertEqual(len(stats['personalMonthly']), 12 * expected_people)
+            self.assertEqual(len(stats['personalYearly']), expected_people)
+            self.assertTrue(all(row['saturation'] == 0 for row in stats['teamMonthly']))
+        self.assertEqual(self.client.delete('/api/users/' + str(worker02['id'])).status_code, 204)
+        active = self.client.get('/api/statistics', params={'year': 2026}).json()
+        inactive = self.client.get('/api/statistics', params={'year': 2026, 'include_inactive': 'true'}).json()
+        self.assertEqual(len(active['personalYearly']), 1)
+        self.assertEqual(len(inactive['personalYearly']), 2)
 
     def test_admin_cannot_assign_records_to_admin(self):
         self.register(); self.login()

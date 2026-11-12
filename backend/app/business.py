@@ -209,10 +209,19 @@ def edit_task(task_id: int, body: TaskInput, _: User=Depends(admin), db: Session
 
 
 @router.delete("/tasks/{task_id}", status_code=204)
-def delete_task(task_id: int, _: User=Depends(admin), db: Session=Depends(get_db)):
+def delete_task(task_id: int, request: Request, _: User=Depends(admin), db: Session=Depends(get_db)):
     task = db.get(TaskType, task_id)
     if not task or not task.is_active:
         raise HTTPException(404, "任务不存在")
+    # 历史名称仍存于别名中，改名后的旧工时也必须一并删除。
+    database = request.app.state.database
+    with database.lock:
+        years = list(database.years)
+    # shortcut: 跨年度文件逐个提交，异常中断后可重试；需要严格原子删除时改用统一事务或备份恢复。
+    for year in years:
+        with Session(database.year_engine(year)) as records:
+            records.execute(delete(WorkRecord).where(WorkRecord.task_type.in_(task.aliases)))
+            records.commit()
     task.is_active = False
     db.commit()
 
@@ -292,6 +301,7 @@ def records(request: Request, year: int | None=Query(None, ge=1900, le=2100), mo
             name: str=Query("", max_length=80), project: str=Query("", max_length=200),
             task_type: str=Query("", max_length=80), description: str=Query("", max_length=4000),
             remark: str=Query("", max_length=2000),
+            exclude: list[str] | None=Query(None),
             hours_min: Decimal | None=Query(None, ge=0, le=24), hours_max: Decimal | None=Query(None, ge=0, le=24),
             code_min: int | None=Query(None, ge=0, le=10000000), code_max: int | None=Query(None, ge=0, le=10000000),
             user: User=Depends(current_user), accounts: Session=Depends(get_db)):
@@ -318,6 +328,27 @@ def records(request: Request, year: int | None=Query(None, ge=1900, le=2100), mo
             query = query.where(column <= maximum * factor)
     if user.role != "admin":
         query = query.where(WorkRecord.user_id == user.id)
+    selectable = {"work_date": WorkRecord.work_date, "project": WorkRecord.project, "task_type": WorkRecord.task_type,
+                  "description": WorkRecord.description, "hours": WorkRecord.hours_tenths, "code_lines": WorkRecord.code_lines,
+                  "remark": WorkRecord.remark}
+    for item in exclude or ():
+        field, sep, value = item.partition(":")
+        if not sep or field not in (*selectable, "name"):
+            raise HTTPException(422, "列筛选条件无效")
+        if field == "name":
+            query = query.where(WorkRecord.user_id.not_in([u.id for u in people.values() if u.name == value]))
+        elif field == "hours":
+            try:
+                query = query.where(WorkRecord.hours_tenths != int(Decimal(value) * 10))
+            except (ValueError, ArithmeticError):
+                raise HTTPException(422, "工时筛选值无效")
+        elif field == "code_lines":
+            try:
+                query = query.where(WorkRecord.code_lines != int(value))
+            except ValueError:
+                raise HTTPException(422, "代码行筛选值无效")
+        else:
+            query = query.where(selectable[field] != value)
     order, fields = record_order(sort, people)
 
     def compare(left, right):
@@ -349,6 +380,26 @@ def records(request: Request, year: int | None=Query(None, ge=1900, le=2100), mo
             streams.append(db.scalars(query.order_by(*order).execution_options(yield_per=100)))
         rows = islice(merge(*streams, key=cmp_to_key(compare)), (page-1)*page_size, page*page_size)
         return {"items": [record_dict(r, people) for r in rows], "total": total, "hours": hours/10}
+
+@router.get("/records/filter-options")
+def record_filter_options(request: Request, field: Literal["name","project","task_type","description","remark"],
+                          include_inactive: bool=True, user: User=Depends(current_user), accounts: Session=Depends(get_db)):
+    people = {u.id: u for u in accounts.scalars(select(User)) if include_inactive or u.is_active}
+    column = WorkRecord.user_id if field == "name" else getattr(WorkRecord, field)
+    values = {}
+    database = request.app.state.database
+    with database.lock:
+        years = list(database.years)
+    for year in years:
+        with Session(database.year_engine(year)) as db:
+            query = select(column, func.count()).group_by(column)
+            if user.role != "admin": query = query.where(WorkRecord.user_id == user.id)
+            elif not include_inactive: query = query.where(WorkRecord.user_id.in_(people))
+            for value, count in db.execute(query):
+                if field == "name": value = people[value].name if value in people else "未知用户"
+                else: value = str(value)
+                values[value] = values.get(value, 0) + count
+    return [{"value": value, "count": values[value]} for value in sorted(values)]
 
 @router.post("/records", status_code=201)
 def add_record(body: RecordInput, request: Request, user: User=Depends(current_user), accounts: Session=Depends(get_db)):
@@ -459,13 +510,11 @@ def annual_payload(request, year, include_inactive, accounts):
 
 
 @router.get("/statistics")
-def statistics(request: Request, year: Year, include_inactive: bool=False, _: User=Depends(admin), accounts: Session=Depends(get_db)):
+def statistics(request: Request, year: Year, include_inactive: bool=False, _: User=Depends(current_user), accounts: Session=Depends(get_db)):
     payload = annual_payload(request, year, include_inactive, accounts)
-    if not payload["entries"]:
-        return None
     try:
-        config, entries = parse_payload(payload)
-        return calculate_statistics(config, entries)
+        config, entries = parse_payload(payload, allow_empty=True)
+        return calculate_statistics(config, entries, year=year)
     except ExportValidationError as exc:
         raise HTTPException(400, str(exc))
 

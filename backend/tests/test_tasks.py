@@ -22,18 +22,19 @@ class TaskTests(unittest.TestCase):
         employee=next(u['id'] for u in self.client.get('/api/users').json() if u['role']=='user')
         body=dict(user_id=employee,work_date='2026-11-04',project='测试项目',task_type='专项测试',description='历史记录',hours=8,code_lines=0)
         record=self.client.post('/api/records',json=body).json()
+        self.assertEqual(self.client.post('/api/records',json=dict(body,work_date='2025-12-31')).status_code,201)
         self.assertEqual(self.client.put('/api/tasks/'+str(task['id']),json={'name':'专项验证'}).status_code,200)
         self.assertIn('专项验证',self.client.get('/api/options').json()['task_types'])
         self.assertEqual(self.client.delete('/api/tasks/'+str(task['id'])).status_code,204)
         self.assertEqual(self.client.post('/api/records',json=body).status_code,422)
-        self.assertEqual(self.client.put('/api/records/2026/'+str(record['id']),json=dict(body,hours=9)).status_code,200)
+        self.assertEqual(self.client.put('/api/records/2026/'+str(record['id']),json=dict(body,hours=9)).status_code,404)
+        self.assertEqual(self.client.get('/api/records?year=2026').json()['total'],0)
+        self.assertEqual(self.client.get('/api/records?year=2025').json()['total'],0)
         response=self.client.get('/api/export?year=2026')
-        self.assertEqual(response.status_code,200)
-        self.assertEqual(int(response.headers['content-length']),len(response.content))
-        self.assertEqual(load_workbook(BytesIO(response.content))['工时打卡明细']['D2'].value,'专项测试')
+        self.assertEqual(response.status_code,400)
         self.assertEqual(self.client.post('/api/tasks',json={'name':'专项测试'}).status_code,409)
 
-    def test_leave_rename_delete_preserves_saturation_semantics(self):
+    def test_leave_rename_delete_removes_old_and_new_records(self):
         self.register(); self.login('admin')
         task=next(t for t in self.client.get('/api/tasks').json() if t['name']=='年假')
         employee=next(u['id'] for u in self.client.get('/api/users').json() if u['role']=='user')
@@ -43,7 +44,7 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/records',json=dict(body,task_type='年休假')).status_code,201)
         self.client.delete('/api/tasks/'+str(task['id']))
         stats=self.client.get('/api/statistics?year=2026').json()
-        self.assertEqual(stats['totalHours'],16)
+        self.assertEqual(stats['totalHours'],0)
         self.assertEqual(stats['totalCodeLines'],0)
         self.assertEqual(stats['projects'],[])
 

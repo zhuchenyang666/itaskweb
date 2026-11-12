@@ -106,7 +106,7 @@ def _validate_step(number: float, step: float, label: str) -> None:
         raise ExportValidationError(f"{label}必须按 {step:g} 的步长填写")
 
 
-def parse_payload(payload: dict[str, Any]) -> tuple[Config, list[Entry]]:
+def parse_payload(payload: dict[str, Any], allow_empty: bool = False) -> tuple[Config, list[Entry]]:
     raw_config = payload.get("config") or {}
     standard_hours = float(_number(raw_config.get("standardHours", 10), "标准日工时"))
     if not 0.1 <= standard_hours <= 24:
@@ -160,7 +160,7 @@ def parse_payload(payload: dict[str, Any]) -> tuple[Config, list[Entry]]:
             raise ExportValidationError(f"第 {index} 行填报人不在维护选项中")
         entries.append(entry)
 
-    if not entries:
+    if not entries and not allow_empty:
         raise ExportValidationError("请至少填写一条工时记录")
 
     return (
@@ -197,13 +197,13 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
 
 
-def calculate_statistics(config: Config, entries: list[Entry]) -> dict[str, Any]:
-    months = sorted({(entry.work_date.year, entry.work_date.month) for entry in entries})
-    years = sorted({entry.work_date.year for entry in entries})
+def calculate_statistics(config: Config, entries: list[Entry], year: int | None = None) -> dict[str, Any]:
+    months = [(year, month) for month in range(1, 13)] if year is not None else sorted({(entry.work_date.year, entry.work_date.month) for entry in entries})
+    years = [year] if year is not None else sorted({entry.work_date.year for entry in entries})
     # Leave entries are valid work-hour records for attendance and saturation.
     # They remain excluded from project/code投入统计 below.
     productive = [entry for entry in entries if not entry.is_leave]
-    active_people = sorted({entry.person for entry in entries})
+    active_people = sorted(config.people if year is not None else {entry.person for entry in entries})
     productive_people = {entry.person for entry in productive}
 
     actual_month_person: dict[tuple[int, int, str], float] = defaultdict(float)

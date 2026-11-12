@@ -20,20 +20,43 @@ const recordFilters = reactive({
   keyword:'',showInactive:true,pageNumber:1,pageSize:20,jump:1,
 })
 const userFilters = reactive({keyword:'', showInactive:true, pageNumber:1, pageSize:20, jump:1})
-const statsFilters = reactive({year:currentYear, showInactive:true})
-const pagination = computed(() => props.page === '用户管理' ? userFilters : recordFilters)
+const userColumns = reactive({username:'',name:'',position:'',role:'',status:''})
+const userSort = reactive({username:'none',name:'none',position:'none',role:'none',status:'none'})
+const userExcluded = reactive({username:[],name:[],position:[],role:[],status:[]})
+const taskFilters = reactive({keyword:'',name:'',pageNumber:1,pageSize:20,jump:1})
+const taskSort = reactive({name:'none'})
+const taskExcluded = reactive({name:[]})
+const statsFilters = reactive({year:currentYear, month:Number(today.slice(5,7)), showInactive:true})
+const monthOptions = Array.from({length:12},(_,i) => ({value:i+1,label:(i+1)+'月'}))
+const pagination = computed(() => props.page === '用户管理' ? userFilters : props.page === '通用设置' ? taskFilters : recordFilters)
 const stats = ref(null)
+const personalMonthRows = computed(() => stats.value?.personalMonthly.filter(row => row.month === `${statsFilters.year}-${String(statsFilters.month).padStart(2,'0')}`) || [])
 const filterError = computed(() => recordFilterError(recordFilters))
 const exportDialog = ref(false), exportYear = ref(currentYear)
 const exportIncludeInactive = ref(false)
-const filteredUsers = computed(() => users.value.filter(u => (userFilters.showInactive || u.is_active) && [u.username,u.name,u.position,u.role === 'admin' ? '管理员' : '普通用户',u.is_active ? '正常' : '已停用'].some(v => v.toLowerCase().includes(userFilters.keyword.toLowerCase()))))
+const userFields = u => ({username:u.username,name:u.name,position:u.position,role:u.role === 'admin' ? '管理员' : '普通用户',status:u.is_active ? '正常' : '已停用'})
+const filteredUsers = computed(() => users.value.filter(u => {
+  const values = userFields(u)
+  return (userFilters.showInactive || u.is_active) && Object.entries(userColumns).every(([key,value]) => values[key].toLowerCase().includes(value.toLowerCase()) && !userExcluded[key].includes(values[key])) && Object.values(values).some(v => v.toLowerCase().includes(userFilters.keyword.toLowerCase()))
+}).sort((a,b) => {
+  for(const key of Object.keys(userSort)) if(userSort[key] !== 'none') {
+    const difference = userFields(a)[key].localeCompare(userFields(b)[key], 'zh-CN')
+    if(difference) return userSort[key] === 'asc' ? difference : -difference
+  }
+  return a.id-b.id
+}))
 const userRows = computed(() => filteredUsers.value.slice((userFilters.pageNumber-1)*userFilters.pageSize,userFilters.pageNumber*userFilters.pageSize))
-const rowTotal = computed(() => props.page === '用户管理' ? filteredUsers.value.length : total.value)
+const filteredTasks = computed(() => tasks.value.filter(t => t.name.toLowerCase().includes(taskFilters.name.toLowerCase()) && t.name.toLowerCase().includes(taskFilters.keyword.toLowerCase()) && !taskExcluded.name.includes(t.name)).sort((a,b) => taskSort.name === 'none' ? a.id-b.id : (taskSort.name === 'asc' ? 1 : -1)*a.name.localeCompare(b.name,'zh-CN')))
+const taskRows = computed(() => filteredTasks.value.slice((taskFilters.pageNumber-1)*taskFilters.pageSize,taskFilters.pageNumber*taskFilters.pageSize))
+const taskColumns = computed(() => [taskRows.value.slice(0,Math.ceil(taskRows.value.length/2)),taskRows.value.slice(Math.ceil(taskRows.value.length/2))])
+const rowTotal = computed(() => props.page === '用户管理' ? filteredUsers.value.length : props.page === '通用设置' ? filteredTasks.value.length : total.value)
 const pageCount = computed(() => Math.max(1,Math.ceil(rowTotal.value/pagination.value.pageSize)))
 const sort = reactive({
   work_date:'asc', name:'none', project:'none', task_type:'none',
   description:'none', hours:'none', code_lines:'none',
 })
+const recordExcluded = reactive({work_date:[],name:[],project:[],task_type:[],description:[],hours:[],code_lines:[],remark:[]})
+const recordOptions = field => request('records/filter-options?' + new URLSearchParams({field,include_inactive:recordFilters.showInactive}))
 const sortColumns = computed(() => [
   ['work_date', '日期'],
   ...(props.user.role === 'admin' ? [['name', '填报人']] : []),
@@ -43,10 +66,10 @@ const sortColumns = computed(() => [
 const primarySort = computed(() => sortColumns.value.find(([field]) => sort[field] !== 'none')?.[0])
 const rows = ref([]), users = ref([]), taskTypes = ref([]), total = ref(0), hours = ref(0)
 const selected = ref([])
-const rowKey = row => props.page === '用户管理' ? String(row.id) : row.work_date.slice(0,4)+'/'+row.id
+const rowKey = row => props.page === '用户管理' || props.page === '通用设置' ? String(row.id) : row.work_date.slice(0,4)+'/'+row.id
 const selectableRows = computed(() => props.page === '用户管理'
   ? userRows.value.filter(user => user.role !== 'admin' && user.is_active)
-  : props.page === '工时记录' ? rows.value : [])
+  : props.page === '通用设置' ? taskRows.value : props.page === '工时记录' ? rows.value : [])
 const selectedRows = computed(() => selectableRows.value.filter(row => selected.value.includes(rowKey(row))))
 const allSelected = computed(() => selectableRows.value.length > 0 && selectedRows.value.length === selectableRows.value.length)
 function selectAll(checked) { selected.value = checked ? selectableRows.value.map(rowKey) : [] }
@@ -78,7 +101,7 @@ async function saveTask() {
   if(!error.value) await load()
 }
 async function removeTask(task) {
-  if(!await ask('确定删除任务“'+task.name+'”？历史工时将保留。')) return
+  if(!await ask('如果删除“'+task.name+'”任务，则所有与此任务相关的工时记录全都会被删除，确定要删除吗？')) return
   await run(async () => {
     await request('tasks/'+task.id,'DELETE')
     taskTypes.value = (await request('options')).task_types
@@ -109,6 +132,7 @@ function filterParams() {
     if(recordFilters[field] !== '') params.set(field,recordFilters[field])
   }
   for(const [field] of sortColumns.value) params.append('sort', field + ':' + sort[field])
+  for(const [field, values] of Object.entries(recordExcluded)) for(const value of values) params.append('exclude',field+':'+value)
   return params
 }
 const personOptions = computed(() => users.value.filter(u => u.role !== "admin").map(u => ({value:u.id,label:u.name+' ('+u.username+')'+(u.is_active ? '' : ' · 已停用')})))
@@ -131,7 +155,7 @@ async function load() {
   try {
     if(props.page === '通用设置') {
       const [data,config] = await Promise.all([request('tasks'),request('settings')])
-      if(current === generation) { tasks.value = data; Object.assign(settings,config) }
+      if(current === generation) { tasks.value = data; Object.assign(settings,config); taskFilters.pageNumber = clampPage(taskFilters.pageNumber, filteredTasks.value.length, taskFilters.pageSize) }
       return
     }
     if(props.user.role === 'admin' && props.page !== '首页总览') {
@@ -145,10 +169,9 @@ async function load() {
       return
     }
     if(props.page === '首页总览') {
-      if(props.user.role !== 'admin') return
-      const key = year+'-'+statsFilters.showInactive
+      const key = props.user.id+'-'+year+'-'+statsFilters.showInactive
       const cached = statsCache.get(key)
-      if(cached) { stats.value = cached.data; if(Date.now()-cached.at < 30000) return }
+      if(cached) { stats.value = cached.data; if(props.user.role === 'admin' && Date.now()-cached.at < 30000) return }
       else stats.value = null
       const data = await request('statistics?' + new URLSearchParams({year,include_inactive:statsFilters.showInactive}))
       if(current === generation) { stats.value = data; statsCache.set(key,{data,at:Date.now()}) }
@@ -179,19 +202,24 @@ function scheduleLoad() {
   selected.value = []
   clearTimeout(filterTimer)
   generation++
-  if(['工时记录','用户管理'].includes(props.page)) pagination.value.pageNumber = pagination.value.jump = 1
+  if(['工时记录','用户管理','通用设置'].includes(props.page)) pagination.value.pageNumber = pagination.value.jump = 1
   filterTimer = setTimeout(load, 250)
 }
 watch(() => [filterParams().toString(), recordFilters.pageSize], () => {
   if(props.page === '工时记录') scheduleLoad()
 })
-watch(() => [userFilters.keyword, userFilters.showInactive, userFilters.pageSize], scheduleLoad)
+watch(() => [userFilters.keyword, userFilters.showInactive, userFilters.pageSize, ...Object.values(userColumns), ...Object.values(userSort), ...Object.values(userExcluded).map(v => v.join('\u0000'))], scheduleLoad)
+watch(() => [taskFilters.keyword, taskFilters.name, taskFilters.pageSize, taskSort.name, taskExcluded.name.join('\u0000')], scheduleLoad)
 watch(() => [statsFilters.year, statsFilters.showInactive], scheduleLoad)
 function reset() {
-  if(props.page === '用户管理') Object.assign(userFilters, {keyword:'', showInactive:true})
+  if(props.page === '用户管理') {
+    Object.assign(userFilters, {keyword:'', showInactive:true})
+    for(const key of Object.keys(userColumns)) { userColumns[key]=''; userSort[key]='none'; userExcluded[key]=[] }
+  }
   else {
     for(const parts of [recordFilters.start,recordFilters.end]) Object.assign(parts,{year:'',month:'',day:''})
     for(const field of ['name','project','task_type','description','remark','hours_min','hours_max','code_min','code_max','keyword']) recordFilters[field]=''
+    for(const field of Object.keys(recordExcluded)) recordExcluded[field]=[]
     recordFilters.showInactive=true
   }
   scheduleLoad()
@@ -229,9 +257,9 @@ async function remove(row) {
 async function deleteSelected() {
   const targets = [...selectedRows.value]
   if(!targets.length || busy.value) return
-  const page = props.page, isUsers = page === '用户管理'
+  const page = props.page, isUsers = page === '用户管理', isTasks = page === '通用设置'
   const keys = targets.map(rowKey)
-  const prompt = isUsers
+  const prompt = isTasks ? '如果删除选中的 '+targets.length+' 项任务（'+targets.map(t => t.name).join('、')+'），则所有与这些任务相关的工时记录全都会被删除，确定要删除吗？' : isUsers
     ? '确定批量停用选中的 '+targets.length+' 位用户？账号和历史工时将保留。'
     : '确定删除选中的 '+targets.length+' 条工时记录？'
   if(!await ask(prompt)) return
@@ -240,7 +268,7 @@ async function deleteSelected() {
   await run(async () => {
     for(let index=0; index<targets.length; index++) {
       try {
-        await request((isUsers ? 'users/' : 'records/')+keys[index], 'DELETE')
+        await request((isUsers ? 'users/' : isTasks ? 'tasks/' : 'records/')+keys[index], 'DELETE')
         deleted++
       } catch(e) {
         failed.push(keys[index])
@@ -255,7 +283,7 @@ async function deleteSelected() {
     if(props.page === page) selected.value = failed
   })
   if(!expired) await load()
-  const action = isUsers ? '停用用户' : '删除记录'
+  const action = isUsers ? '停用用户' : isTasks ? '删除任务及相关工时' : '删除记录'
   notify(failed.length ? '已'+action+' '+deleted+' 项，'+failed.length+' 项失败，可重试' : '已'+action+' '+deleted+' 项', failed.length ? 'error' : 'success')
 }
 async function userAction(target, action) {
@@ -313,7 +341,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="business" :class="{tabular: page === '工时记录' || page === '用户管理'}">
+  <section class="business" :class="{tabular: page === '工时记录' || page === '用户管理' || page === '通用设置'}">
     <form v-if="page === '个人信息'" class="profile-form" @submit.prevent="saveProfile">
       <p class="subtitle">完善姓名与职位，便于工时统计。</p>
       <label for="fixed-account">登录账号</label><input id="fixed-account" :value="user.username" disabled />
@@ -325,16 +353,18 @@ onMounted(async () => {
     <template v-else-if="page === '通用设置' && user.role === 'admin'">
       <form class="settings-form" @submit.prevent="saveSettings"><h2>工时统计设置</h2><div class="form-grid"><label>标准日工时（小时/天）<input v-model.number="settings.standard_hours" type="number" min="0.1" max="24" step="0.1" required /></label><label>年度年假总额（天/人/年）<input v-model.number="settings.annual_leave_days" type="number" min="0" max="365" step="0.5" required /></label></div><button class="primary" :disabled="busy">保存设置</button></form>
       <h2 class="settings-heading">任务设置</h2>
-      <div class="toolbar tasks-toolbar"><p class="subtitle">任务删除后不再用于新增填报，历史记录保留。</p><button class="primary" :disabled="busy" @click="taskEditor = 'new'; taskName = ''">添加任务</button></div>
-      <div class="tasks-scroll"><table class="tasks-table"><colgroup><col style="width:52px" /><col style="width:288px" /><col style="width:160px" /></colgroup><thead><tr><th class="serial" title="序号">序号</th><th title="任务名称">任务名称</th><th title="操作">操作</th></tr></thead>
-        <tbody><tr v-for="(task,i) in tasks" :key="task.id"><td class="serial" :title="i+1">{{ i+1 }}</td><td :title="task.name">{{ task.name }}</td><td class="actions"><button class="text-button" title="编辑" :disabled="busy" @click="taskEditor = task.id; taskName = task.name">编辑</button><button class="text-button danger" title="删除" :disabled="busy" @click="removeTask(task)">删除</button></td></tr></tbody>
-      </table></div>
+      <p class="subtitle">删除任务会同时删除所有年份中关联的工时记录。</p>
+      <div class="filters"><label class="keyword">关键词<input v-model="taskFilters.keyword" placeholder="搜索任务名称" /></label><button type="button" class="text-button" @click="taskFilters.keyword='';taskFilters.name='';taskSort.name='none';taskExcluded.name=[]">重置</button></div>
+      <div class="toolbar summary"><span>任务设置 · {{ filteredTasks.length }}条</span><div class="summary-actions"><button class="batch-delete" :disabled="busy || !selectedRows.length" @click="deleteSelected">批量删除</button><button class="primary" :disabled="busy" @click="taskEditor = 'new'; taskName = ''">添加任务</button></div></div>
+      <div class="task-columns"><div v-for="(column,side) in taskColumns" :key="side" class="table-scroll"><table class="tasks-table"><colgroup><col style="width:40px" /><col style="width:52px" /><col /><col style="width:130px" /></colgroup><thead><tr><th class="selection-cell"><input type="checkbox" :checked="column.length > 0 && column.every(t => selected.includes(String(t.id)))" :disabled="busy || !column.length" :aria-label="'全选'+(side ? '右' : '左')+'侧任务'" @change="selected=$event.target.checked ? [...new Set([...selected,...column.map(t => String(t.id))])] : selected.filter(id => !column.some(t => String(t.id) === id))" /></th><th class="serial">序号</th><th><div class="column-heading">任务名称<RecordColumnFilter field="name" label="任务名称" :filters="taskFilters" :sort="taskSort" :excluded="taskExcluded" :options="tasks.map(t => t.name)" /></div></th><th>操作</th></tr></thead>
+        <tbody><tr v-for="(task,i) in column" :key="task.id"><td class="selection-cell"><input v-model="selected" type="checkbox" :value="String(task.id)" :disabled="busy" :aria-label="'选择任务'+task.name" /></td><td class="serial">{{ (taskFilters.pageNumber-1)*taskFilters.pageSize + side*Math.ceil(taskRows.length/2)+i+1 }}</td><td :title="task.name">{{ task.name }}</td><td class="actions"><button class="text-button" title="编辑" :disabled="busy" @click="taskEditor = task.id; taskName = task.name">编辑</button><button class="text-button danger" title="删除" :disabled="busy" @click="removeTask(task)">删除</button></td></tr></tbody>
+      </table></div></div>
     </template>
     <template v-else-if="page === '用户管理'">
-      <div class="toolbar"><p class="subtitle">停用用户会保留全部历史工时及账号。</p><div class="summary-actions"><button class="batch-delete" :disabled="busy || !selectedRows.length" @click="deleteSelected">批量删除</button><button class="primary" :disabled="busy" @click="addingUser = true">添加用户</button></div></div>
+      <p class="subtitle">停用用户会保留全部历史工时及账号。</p>
       <div class="filters"><label class="keyword">关键词<input id="user-search" v-model="userFilters.keyword" placeholder="账号、姓名、职位或状态" /></label><label class="checkbox"><input v-model="userFilters.showInactive" type="checkbox" />显示停用人员</label><button type="button" class="text-button" @click="reset">重置</button></div>
-      <p class="subtitle">共 {{ filteredUsers.length }} 位用户</p>
-      <div class="table-scroll"><table class="users-table"><colgroup><col style="width:40px" /><col style="width:52px" /><col style="width:30%" /><col /><col /><col /><col /><col style="width:190px" /></colgroup><thead><tr><th class="selection-cell"><input type="checkbox" :checked="allSelected" :indeterminate="selectedRows.length > 0 && !allSelected" :disabled="busy || !selectableRows.length" aria-label="全选当前页可停用用户" @change="selectAll($event.target.checked)" /></th><th class="serial" title="序号">序号</th><th title="账号">账号</th><th title="姓名">姓名</th><th title="职位">职位</th><th title="角色">角色</th><th title="状态">状态</th><th title="操作">操作</th></tr></thead>
+      <div class="toolbar summary"><span>用户管理 · {{ filteredUsers.length }}位用户</span><div class="summary-actions"><button class="batch-delete" :disabled="busy || !selectedRows.length" @click="deleteSelected">批量删除</button><button class="primary" :disabled="busy" @click="addingUser = true">添加用户</button></div></div>
+      <div class="table-scroll"><table class="users-table"><colgroup><col style="width:40px" /><col style="width:52px" /><col style="width:30%" /><col /><col /><col /><col /><col style="width:190px" /></colgroup><thead><tr><th class="selection-cell"><input type="checkbox" :checked="allSelected" :indeterminate="selectedRows.length > 0 && !allSelected" :disabled="busy || !selectableRows.length" aria-label="全选当前页可停用用户" @change="selectAll($event.target.checked)" /></th><th class="serial" title="序号">序号</th><th v-for="[field,label] in [['username','账号'],['name','姓名'],['position','职位'],['role','角色'],['status','状态']]" :key="field"><div class="column-heading">{{ label }}<RecordColumnFilter :field="field" :label="label" :filters="userColumns" :sort="userSort" :excluded="userExcluded" :options="[...new Set(users.filter(u => userFilters.showInactive || u.is_active).map(u => userFields(u)[field]))].sort()" /></div></th><th title="操作">操作</th></tr></thead>
       <tbody><tr v-for="(target,index) in userRows" :key="target.id" :class="{inactive: !target.is_active}">
         <td class="selection-cell"><input v-model="selected" type="checkbox" :value="String(target.id)" :disabled="busy || target.role === 'admin' || !target.is_active" :aria-label="'选择用户 '+target.name" /></td>
         <td class="serial" :title="(userFilters.pageNumber-1)*userFilters.pageSize+index+1">{{ (userFilters.pageNumber-1)*userFilters.pageSize+index+1 }}</td><td :title="target.username">{{ target.username }}</td><td :title="target.name">{{ target.name }}</td><td :title="target.position">{{ target.position }}</td><td :title="target.role === 'admin' ? '管理员' : '普通用户'">{{ target.role === 'admin' ? '管理员' : '普通用户' }}</td><td :title="target.is_active ? '正常' : '已停用'">{{ target.is_active ? '正常' : '已停用' }}</td>
@@ -355,10 +385,10 @@ onMounted(async () => {
             :aria-sort="field === primarySort ? (sort[field] === 'desc' ? 'descending' : 'ascending') : undefined">
           <div class="column-heading">
           {{ label }}
-          <RecordColumnFilter :field="field" :label="label" :filters="recordFilters" :sort="sort" />
+          <RecordColumnFilter :field="field" :label="label" :filters="recordFilters" :sort="sort" :excluded="recordExcluded" :fetch-options="recordOptions" />
           </div>
         </th>
-        <th title="备注"><div class="column-heading">备注<RecordColumnFilter field="remark" label="备注" :filters="recordFilters" /></div></th><th title="操作">操作</th>
+        <th title="备注"><div class="column-heading">备注<RecordColumnFilter field="remark" label="备注" :filters="recordFilters" :excluded="recordExcluded" :fetch-options="recordOptions" /></div></th><th title="操作">操作</th>
       </tr></thead>
       <tbody><tr v-for="(row,index) in rows" :key="row.work_date.slice(0,4) + '-' + row.id" :class="{inactive: !row.is_active}">
         <td class="selection-cell"><input v-model="selected" type="checkbox" :value="row.work_date.slice(0,4)+'/'+row.id" :disabled="busy" :aria-label="'选择 '+row.work_date+' '+row.name+' 的工时记录'" /></td>
@@ -367,23 +397,24 @@ onMounted(async () => {
         <td class="actions"><button class="text-button" title="编辑" :disabled="busy" @click="openEditor(row)">编辑</button><button class="text-button danger" title="删除" :disabled="busy" @click="remove(row)">删除</button></td>
       </tr><tr v-if="!rows.length"><td :colspan="user.role === 'admin' ? 11 : 10" class="empty-row">{{ busy ? '正在加载…' : '暂无符合条件的工时记录' }}</td></tr></tbody></table></div>
     </template>
-    <template v-else-if="page === '首页总览' && user.role === 'admin'">
+    <template v-else-if="page === '首页总览'">
       <div class="filters"><label>统计年份<input v-model.number="statsFilters.year" type="number" min="1900" max="2100" /></label><label class="checkbox"><input v-model="statsFilters.showInactive" type="checkbox" />显示停用人员</label><p class="subtitle">与年度 XLSX 使用相同数据和统计口径</p></div>
       <template v-if="stats">
         <p class="field-help">饱和度：低于80%为黄色，80%–100%为绿色，高于100%为红色。年假计入实际工时，不计入项目投入和有效代码行。</p>
         <div class="charts-grid">
           <StatChart title="团队月度饱和度" :rows="stats.teamMonthly" label="month" value="saturation" kind="line" unit="%" />
-          <StatChart title="任务类型工时占比" :rows="stats.tasks.filter(t => t.hours > 0)" label="taskType" value="share" kind="bar" unit="%" />
+          <StatChart title="任务类型工时占比" :rows="stats.tasks" label="taskType" value="share" kind="bar" unit="%" />
           <StatChart title="月度实际工时" :rows="stats.teamMonthly" label="month" value="actualHours" kind="bar" unit="小时" />
           <StatChart title="项目投入工时（不含年假）" :rows="stats.projects" label="project" value="hours" kind="bar" unit="小时" />
           <StatChart title="个人年度饱和度" :rows="stats.personalYearly" label="person" value="saturation" kind="bar" unit="%" />
+          <StatChart title="个人月度饱和度" :rows="personalMonthRows" label="person" value="saturation" kind="bar" unit="%"><template #controls><label class="month-control">月份<ThemeSelect v-model="statsFilters.month" :options="monthOptions" label="个人月度饱和度月份" /></label></template></StatChart>
           <StatChart title="项目有效代码行" :rows="stats.projects" label="project" value="codeLines" kind="bar" unit="行" />
         </div>
 
       </template>
       <p v-else-if="!busy && !error" class="empty-row">该年度暂无可统计的工时记录</p>
     </template>
-    <div v-if="page === '工时记录' || page === '用户管理'" class="pagination">
+    <div v-if="page === '工时记录' || page === '用户管理' || page === '通用设置'" class="pagination">
       <label>每页<ThemeSelect v-model="pagination.pageSize" :options="sizeOptions" label="每页条数" /></label>
       <span>共 {{ rowTotal }} 条</span><button :disabled="busy || pagination.pageNumber <= 1" @click="goToPage(pagination.pageNumber-1)">上一页</button><span>{{ pagination.pageNumber }} / {{ pageCount }}</span><button :disabled="busy || pagination.pageNumber >= pageCount" @click="goToPage(pagination.pageNumber+1)">下一页</button>
       <form @submit.prevent="goToPage(pagination.jump)"><label>跳至<input v-model.number="pagination.jump" type="number" min="1" :max="pageCount" required />页</label><button :disabled="busy">跳转</button></form>
@@ -488,12 +519,14 @@ td .text-button.danger{background:#fde7e4;color:#b33529;margin-left:5px}
 .confirmation-message{margin:22px 0;line-height:1.8}
 .confirmation-actions{display:flex;justify-content:flex-end;gap:12px}
 .charts-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 36px}
+.month-control{display:flex;align-items:center;gap:8px;margin:0;font-size:13px}.month-control :deep(.theme-select){width:90px}.month-control :deep(.select-trigger){height:34px;padding:5px 9px}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 @media(max-width:1000px){.charts-grid{grid-template-columns:1fr}}
 @media(max-width:600px){.form-grid{grid-template-columns:1fr}.filters .keyword{flex-basis:100%}.pagination{justify-content:flex-start}}
 
 .settings-form{max-width:650px;margin:20px 0 32px}.settings-form h2,.settings-heading{font-size:20px}.settings-form button{margin-top:18px}
 .export-progress{text-align:center;padding:16px 4px}.export-progress p{margin:18px 0}.export-progress progress{display:block;width:100%;height:10px;accent-color:#287646}.export-progress progress::-webkit-progress-bar{background:#e2efe6;border-radius:6px}.export-progress progress::-webkit-progress-value{background:#287646;border-radius:6px}
-.tasks-toolbar{width:500px;max-width:100%}.tasks-scroll{max-width:100%;overflow-x:auto}.tasks-table{table-layout:fixed;width:500px;min-width:500px;max-width:500px;align-self:flex-start}
+.task-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.tasks-table{table-layout:fixed;width:100%;min-width:360px}.tasks-table .serial{left:40px}
+@media(max-width:900px){.task-columns{grid-template-columns:1fr}}
 td .text-button.green-button{background:#206d37;color:#fff}
 </style>

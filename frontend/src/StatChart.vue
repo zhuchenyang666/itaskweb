@@ -23,6 +23,7 @@ function display(v) { return props.unit === '%' ? (Number(v)*100).toFixed(1)+'%'
 <section class="chart-section">
   <div class="chart-heading">
     <h2>{{ title }}</h2>
+    <slot name="controls" />
     <div v-if="kind === 'bar' && rows.length > 1" class="chart-order" role="group" :aria-label="title + '排序'">
       <label><input type="radio" :name="sortId" value="asc" :checked="direction === 'asc'" @change="sortBy('asc')" />升序</label>
       <label><input type="radio" :name="sortId" value="desc" :checked="direction === 'desc'" @change="sortBy('desc')" />降序</label>

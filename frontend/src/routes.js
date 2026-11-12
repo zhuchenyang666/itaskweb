@@ -1,5 +1,5 @@
 const routes = [
-  { page:'首页总览', path:'/overview', role:'admin' },
+  { page:'首页总览', path:'/overview' },
   { page:'工时记录', path:'/records' },
   { page:'用户管理', path:'/users', role:'admin' },
   { page:'个人信息', path:'/profile', role:'user' },

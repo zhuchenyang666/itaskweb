@@ -172,17 +172,17 @@ onUnmounted(() => {
         <a v-for="route in navigation" :key="route.path" :href="route.path" :class="{active:page === route.page}"
            :aria-current="page === route.page ? 'page' : undefined" @click.exact.prevent="goPage(route)">{{ route.page }}</a>
       </nav>
-      <button type="button" class="version-entry" :disabled="exportLocked" aria-label="查看 v.20261111 更新说明" @click="versionDialog = true">
-        <img src="/version.png" alt="" /><span>v.20261111</span>
+      <button type="button" class="version-entry" :disabled="exportLocked" aria-label="查看 v.20261112 更新说明" @click="versionDialog = true">
+        <img src="/version.png" alt="" /><span>v.20261112</span>
       </button>
       <ThemeDialog :open="versionDialog" labelledby="version-title" @close="versionDialog = false">
-        <div class="version-heading"><h2 id="version-title">版本更新 · v.20261111</h2><button type="button" class="close-button" aria-label="关闭更新说明" @click="versionDialog = false">×</button></div>
+        <div class="version-heading"><h2 id="version-title">版本更新 · v.20261112</h2><button type="button" class="close-button" aria-label="关闭更新说明" @click="versionDialog = false">×</button></div>
         <ol class="version-notes">
-          <li>首页总览的任务类型工时占比改为横向柱状图。柱状图支持升序、降序和不排序，默认降序。</li>
-          <li>工时记录在新增、编辑和删除后保留筛选。表头支持逐列筛选和跨年日期范围，关键词可在筛选结果上继续匹配。默认仅按日期升序，表格支持横向滚动。</li>
-          <li>年度导出先选择年份，默认当年，可独立选择是否包含停用人员。</li>
-          <li>工时记录和用户管理添加批量删除功能。用户批量删除为停用，保留账号及历史工时。</li>
-          <li>导航页使用独立地址，支持直接访问、刷新和浏览器前进后退。侧栏使用默认鼠标箭头。</li>
+          <li>首页总览补齐全年月份、所有人员和所有任务类型的数据；个人年度与月度饱和度分栏展示，月度可选择月份。</li>
+          <li>工时记录、用户管理和通用设置的表头提供可选项复选框筛选，并支持逐列排序；关键词可继续筛选结果。</li>
+          <li>通用设置删除任务时会同时删除相关工时记录，删除前明确提示。任务支持批量删除。</li>
+          <li>表格随每页条数自然撑开，保留表格横向滚动。</li>
+          <li>普通用户可在首页总览查看全员工时图表，工时记录仍仅对本人可见。</li>
         </ol>
       </ThemeDialog>
     </aside>
@@ -190,7 +190,7 @@ onUnmounted(() => {
       <header><button :disabled="busy || exportLocked" class="text-button" @click="logout">返回首页</button><span class="role-badge">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</span></header>
       <h1>{{ page }}</h1>
       <template v-if="page === '工时记录' || page === '首页总览'">
-        <p class="subtitle">{{ user.role === 'admin' ? '全员工时记录' : '我的工时记录 · 仅展示本人填报内容' }}</p>
+        <p class="subtitle">{{ page === '首页总览' || user.role === 'admin' ? '全员工时记录' : '我的工时记录 · 仅展示本人填报内容' }}</p>
 
 
       </template>
