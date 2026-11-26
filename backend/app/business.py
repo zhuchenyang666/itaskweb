@@ -268,10 +268,10 @@ def record_order(sort, people):
     order = [column.asc() if directions[field] == "asc" else column.desc()
              for field, column in columns.items() if directions.get(field) in ("asc", "desc")]
     if "work_date" not in directions:
-        order.append(WorkRecord.work_date.asc())
+        order.append(WorkRecord.work_date.desc())
     fields = [(field, directions[field]) for field in columns if directions.get(field) in ("asc", "desc")]
     if "work_date" not in directions:
-        fields.append(("work_date", "asc"))
+        fields.append(("work_date", "desc"))
     return [*order, WorkRecord.id.desc()], [*fields, ("id", "desc")]
 
 
@@ -510,7 +510,7 @@ def annual_payload(request, year, include_inactive, accounts):
 
 
 @router.get("/statistics")
-def statistics(request: Request, year: Year, include_inactive: bool=False, _: User=Depends(current_user), accounts: Session=Depends(get_db)):
+def statistics(request: Request, year: Year, include_inactive: bool=False, _: User=Depends(admin), accounts: Session=Depends(get_db)):
     payload = annual_payload(request, year, include_inactive, accounts)
     try:
         config, entries = parse_payload(payload, allow_empty=True)

@@ -146,7 +146,7 @@ class BusinessTests(unittest.TestCase):
         self.assertEqual([(row["name"], row["hours"]) for row in items(*combined, page=2)],
                          [("AlphaUser", 2), ("ZuluUser", 9)])
         self.assertEqual([row["code_lines"] for row in items("code_lines:asc", size=4)], [2, 10, 20, 100])
-        self.assertEqual([row["hours"] for row in items(size=4)], [5, 10, 2, 9])
+        self.assertEqual([row["hours"] for row in items(size=4)], [10, 2, 9, 5])
         self.assertEqual([row["hours"] for row in items("work_date:desc", size=4)], [10, 2, 9, 5])
         all_ascending = ("work_date:asc", "name:asc", "project:asc", "task_type:asc",
                          "description:asc", "hours:asc", "code_lines:asc")
@@ -215,7 +215,7 @@ class BusinessTests(unittest.TestCase):
         self.register(); self.login()
         for n in range(25):
             self.client.post("/api/records", json=dict(self.entry(), description=f"说明{n}"))
-        self.assertEqual(self.client.get("/api/statistics?year=2026").json()["totalHours"], 25*7.5)
+        self.assertEqual(self.client.get("/api/statistics?year=2026").status_code, 403)
         self.assertEqual(self.client.get("/api/records?year=2026&month=2&day=31").status_code, 422)
         self.assertEqual(self.client.get("/api/records?year=2026&day=4").status_code, 422)
         self.assertEqual(self.client.get("/api/records?year=2024&month=2&day=29").status_code, 200)
@@ -237,19 +237,16 @@ class BusinessTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/statistics?year=2026").json()["teamMonthly"][10]["actualHours"], 0)
         self.assertEqual(self.client.get("/api/statistics?year=2026&include_inactive=true").json()["totalHours"],25*7.5)
 
-    def test_regular_user_overview_shows_team_but_records_stay_private(self):
+    def test_regular_user_cannot_view_overview_or_other_records(self):
         self.register(); self.login()
         self.client.post('/api/records', json=self.entry())
         self.register('Worker02'); self.login('Worker02')
         self.client.post('/api/records', json=dict(self.entry(), hours=3))
-        team = self.client.get('/api/statistics', params={'year':2026,'include_inactive':True})
-        self.assertEqual(team.status_code, 200)
-        self.assertEqual((team.json()['totalHours'], team.json()['peopleCount']), (10.5, 2))
-        self.assertEqual(len(team.json()['teamMonthly']), 12)
+        self.assertEqual(self.client.get('/api/statistics', params={'year':2026,'include_inactive':True}).status_code, 403)
         self.assertEqual(self.client.get('/api/records?year=2026').json()['hours'], 3)
         self.assertEqual(self.client.get('/api/export?year=2026').status_code, 403)
         self.login('Worker01')
-        self.assertEqual(self.client.get('/api/statistics?year=2026').json()['totalHours'], 10.5)
+        self.assertEqual(self.client.get('/api/statistics?year=2026').status_code, 403)
         self.assertEqual(self.client.get('/api/records?year=2026').json()['hours'], 7.5)
         self.login('admin')
         self.assertEqual(self.client.get('/api/statistics?year=2026').json()['totalHours'], 10.5)

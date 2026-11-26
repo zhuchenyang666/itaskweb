@@ -52,7 +52,7 @@ const taskColumns = computed(() => [taskRows.value.slice(0,Math.ceil(taskRows.va
 const rowTotal = computed(() => props.page === '用户管理' ? filteredUsers.value.length : props.page === '通用设置' ? filteredTasks.value.length : total.value)
 const pageCount = computed(() => Math.max(1,Math.ceil(rowTotal.value/pagination.value.pageSize)))
 const sort = reactive({
-  work_date:'asc', name:'none', project:'none', task_type:'none',
+  work_date:'desc', name:'none', project:'none', task_type:'none',
   description:'none', hours:'none', code_lines:'none',
 })
 const recordExcluded = reactive({work_date:[],name:[],project:[],task_type:[],description:[],hours:[],code_lines:[],remark:[]})
@@ -169,9 +169,10 @@ async function load() {
       return
     }
     if(props.page === '首页总览') {
-      const key = props.user.id+'-'+year+'-'+statsFilters.showInactive
+      if(props.user.role !== 'admin') return
+      const key = year+'-'+statsFilters.showInactive
       const cached = statsCache.get(key)
-      if(cached) { stats.value = cached.data; if(props.user.role === 'admin' && Date.now()-cached.at < 30000) return }
+      if(cached) { stats.value = cached.data; if(Date.now()-cached.at < 30000) return }
       else stats.value = null
       const data = await request('statistics?' + new URLSearchParams({year,include_inactive:statsFilters.showInactive}))
       if(current === generation) { stats.value = data; statsCache.set(key,{data,at:Date.now()}) }
@@ -397,7 +398,7 @@ onMounted(async () => {
         <td class="actions"><button class="text-button" title="编辑" :disabled="busy" @click="openEditor(row)">编辑</button><button class="text-button danger" title="删除" :disabled="busy" @click="remove(row)">删除</button></td>
       </tr><tr v-if="!rows.length"><td :colspan="user.role === 'admin' ? 11 : 10" class="empty-row">{{ busy ? '正在加载…' : '暂无符合条件的工时记录' }}</td></tr></tbody></table></div>
     </template>
-    <template v-else-if="page === '首页总览'">
+    <template v-else-if="page === '首页总览' && user.role === 'admin'">
       <div class="filters"><label>统计年份<input v-model.number="statsFilters.year" type="number" min="1900" max="2100" /></label><label class="checkbox"><input v-model="statsFilters.showInactive" type="checkbox" />显示停用人员</label><p class="subtitle">与年度 XLSX 使用相同数据和统计口径</p></div>
       <template v-if="stats">
         <p class="field-help">饱和度：低于80%为黄色，80%–100%为绿色，高于100%为红色。年假计入实际工时，不计入项目投入和有效代码行。</p>

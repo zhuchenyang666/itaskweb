@@ -182,7 +182,6 @@ onUnmounted(() => {
           <li>工时记录、用户管理和通用设置的表头提供可选项复选框筛选，并支持逐列排序；关键词可继续筛选结果。</li>
           <li>通用设置删除任务时会同时删除相关工时记录，删除前明确提示。任务支持批量删除。</li>
           <li>表格随每页条数自然撑开，保留表格横向滚动。</li>
-          <li>普通用户可在首页总览查看全员工时图表，工时记录仍仅对本人可见。</li>
         </ol>
       </ThemeDialog>
     </aside>
@@ -190,7 +189,7 @@ onUnmounted(() => {
       <header><button :disabled="busy || exportLocked" class="text-button" @click="logout">返回首页</button><span class="role-badge">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</span></header>
       <h1>{{ page }}</h1>
       <template v-if="page === '工时记录' || page === '首页总览'">
-        <p class="subtitle">{{ page === '首页总览' || user.role === 'admin' ? '全员工时记录' : '我的工时记录 · 仅展示本人填报内容' }}</p>
+        <p class="subtitle">{{ user.role === 'admin' ? '全员工时记录' : '我的工时记录 · 仅展示本人填报内容' }}</p>
 
 
       </template>
